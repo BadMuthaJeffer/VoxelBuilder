@@ -14,16 +14,19 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import org.lwjgl.glfw.GLFW;
 
 /**
- * Preview hotkeys (client-only)
+ * Preview hotkeys (client-only).
  *
  * IMPORTANT:
- * - Confirm/Cancel are intentionally DEFAULT UNBOUND so they MUST appear in Controls.
- * - Confirm sets renderer locked state (ghost turns red).
- * - Cancel clears renderer locked state (ghost turns cyan) and resets rotations.
+ * - Key registration MUST be on the MOD event bus (RegisterKeyMappingsEvent).
+ * - Tick handling MUST be on the GAME event bus.
+ *
+ * X/Y/Z rotate, R resets.
+ * Confirm/Cancel are DEFAULT UNBOUND so they MUST appear in Controls.
+ * Confirm sets preview locked (ghost turns red). Cancel clears it (ghost cyan) and resets rotations.
  */
-@EventBusSubscriber(modid = "voxelbuilder", value = net.neoforged.api.distmarker.Dist.CLIENT)
 public final class VoxelBuilderPreviewHotkeys {
 
+    private static final String MODID = "voxelbuilder";
     private static final String CATEGORY = "key.categories.voxelbuilder";
 
     private static final KeyMapping ROT_X = new KeyMapping(
@@ -54,7 +57,7 @@ public final class VoxelBuilderPreviewHotkeys {
             CATEGORY
     );
 
-    // DEFAULT UNBOUND so it MUST show in Controls and you can choose Enter yourself.
+    // DEFAULT UNBOUND so it MUST show in Controls (you bind Enter manually).
     private static final KeyMapping CONFIRM = new KeyMapping(
             "key.voxelbuilder.confirm_build",
             InputConstants.Type.KEYSYM,
@@ -62,7 +65,7 @@ public final class VoxelBuilderPreviewHotkeys {
             CATEGORY
     );
 
-    // DEFAULT UNBOUND so it MUST show in Controls and you can choose Backspace yourself.
+    // DEFAULT UNBOUND so it MUST show in Controls (you bind Backspace manually).
     private static final KeyMapping CANCEL = new KeyMapping(
             "key.voxelbuilder.cancel_build",
             InputConstants.Type.KEYSYM,
@@ -79,88 +82,96 @@ public final class VoxelBuilderPreviewHotkeys {
     private VoxelBuilderPreviewHotkeys() {}
 
     /* =========================
-     * Key registration
+     * MOD BUS: register key mappings
      * ========================= */
 
-    @SubscribeEvent
-    public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
-        event.register(ROT_X);
-        event.register(ROT_Y);
-        event.register(ROT_Z);
-        event.register(RESET);
-        event.register(CONFIRM);
-        event.register(CANCEL);
+    @EventBusSubscriber(modid = MODID, bus = EventBusSubscriber.Bus.MOD, value = net.neoforged.api.distmarker.Dist.CLIENT)
+    public static final class ModBus {
+
+        @SubscribeEvent
+        public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
+            event.register(ROT_X);
+            event.register(ROT_Y);
+            event.register(ROT_Z);
+            event.register(RESET);
+            event.register(CONFIRM);
+            event.register(CANCEL);
+        }
     }
 
     /* =========================
-     * Tick handling
+     * GAME BUS: handle key presses
      * ========================= */
 
-    @SubscribeEvent
-    public static void onClientTick(ClientTickEvent.Post event) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc == null) return;
+    @EventBusSubscriber(modid = MODID, bus = EventBusSubscriber.Bus.GAME, value = net.neoforged.api.distmarker.Dist.CLIENT)
+    public static final class GameBus {
 
-        // Only when no GUI is open
-        if (mc.screen != null) return;
+        @SubscribeEvent
+        public static void onClientTick(ClientTickEvent.Post event) {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null) return;
 
-        // Confirm: lock + turn ghost RED
-        while (CONFIRM.consumeClick()) {
-            rotationLocked = true;
-            GhostPreviewDebugRenderer.setPreviewLocked(true);
+            // Only while in-world (no GUI open)
+            if (mc.screen != null) return;
 
-            if (mc.player != null) {
-                mc.player.displayClientMessage(
-                        net.minecraft.network.chat.Component.literal("CONFIRMED: preview locked (red)."),
-                        true
-                );
+            // Confirm: lock + turn ghost RED
+            while (CONFIRM.consumeClick()) {
+                rotationLocked = true;
+                GhostPreviewDebugRenderer.setPreviewLocked(true);
+
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal("CONFIRMED: preview locked (red)."),
+                            true
+                    );
+                }
             }
-        }
 
-        // Cancel: unlock + reset + turn ghost CYAN
-        while (CANCEL.consumeClick()) {
-            rotationLocked = false;
+            // Cancel: unlock + reset + turn ghost CYAN
+            while (CANCEL.consumeClick()) {
+                rotationLocked = false;
 
-            rx = 0; ry = 0; rz = 0;
-            GhostPreviewDebugRenderer.resetPreviewRotation();
-            GhostPreviewDebugRenderer.setPreviewLocked(false);
+                rx = 0; ry = 0; rz = 0;
+                GhostPreviewDebugRenderer.resetPreviewRotation();
+                GhostPreviewDebugRenderer.setPreviewLocked(false);
 
-            if (mc.player != null) {
-                mc.player.displayClientMessage(
-                        net.minecraft.network.chat.Component.literal("CANCELLED: preview unlocked."),
-                        true
-                );
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal("CANCELLED: preview unlocked."),
+                            true
+                    );
+                }
             }
-        }
 
-        // If locked: eat rotation keys so nothing changes
-        if (rotationLocked) {
-            while (ROT_X.consumeClick()) {}
-            while (ROT_Y.consumeClick()) {}
-            while (ROT_Z.consumeClick()) {}
-            while (RESET.consumeClick()) {}
-            return;
-        }
+            // If locked: ignore rotation keys (consume so no queuing)
+            if (rotationLocked) {
+                while (ROT_X.consumeClick()) {}
+                while (ROT_Y.consumeClick()) {}
+                while (ROT_Z.consumeClick()) {}
+                while (RESET.consumeClick()) {}
+                return;
+            }
 
-        // Rotation keys (unlocked)
-        while (ROT_X.consumeClick()) {
-            rx = (rx + 90) % 360;
-            GhostPreviewDebugRenderer.setPreviewRotationX(rx);
-        }
+            // Rotation keys (unlocked)
+            while (ROT_X.consumeClick()) {
+                rx = (rx + 90) % 360;
+                GhostPreviewDebugRenderer.setPreviewRotationX(rx);
+            }
 
-        while (ROT_Y.consumeClick()) {
-            ry = (ry + 90) % 360;
-            GhostPreviewDebugRenderer.setPreviewRotationY(ry);
-        }
+            while (ROT_Y.consumeClick()) {
+                ry = (ry + 90) % 360;
+                GhostPreviewDebugRenderer.setPreviewRotationY(ry);
+            }
 
-        while (ROT_Z.consumeClick()) {
-            rz = (rz + 90) % 360;
-            GhostPreviewDebugRenderer.setPreviewRotationZ(rz);
-        }
+            while (ROT_Z.consumeClick()) {
+                rz = (rz + 90) % 360;
+                GhostPreviewDebugRenderer.setPreviewRotationZ(rz);
+            }
 
-        while (RESET.consumeClick()) {
-            rx = 0; ry = 0; rz = 0;
-            GhostPreviewDebugRenderer.resetPreviewRotation();
+            while (RESET.consumeClick()) {
+                rx = 0; ry = 0; rz = 0;
+                GhostPreviewDebugRenderer.resetPreviewRotation();
+            }
         }
     }
 }
