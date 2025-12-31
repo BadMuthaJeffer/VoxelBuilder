@@ -1,52 +1,79 @@
 package com.voxelbuilder.client.input;
 
 import com.mojang.blaze3d.platform.InputConstants;
+import com.voxelbuilder.client.build.BuildPlan;
+import com.voxelbuilder.client.build.VoxelBuilderSession;
 import com.voxelbuilder.client.render.GhostPreviewDebugRenderer;
 
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.BlockPos;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
-
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
-import net.neoforged.neoforge.common.util.Lazy;
 
 import org.lwjgl.glfw.GLFW;
 
 /**
  * Hotkeys for preview rotation while the ghost is visible (screen closed).
  *
- * Flow supported:
+ * Supported flow:
  * - User presses Place Build (arms placement, closes GUI)
- * - User right-clicks block to anchor
+ * - User right-clicks block to anchor (locks preview position)
  * - User presses X / Y / Z to rotate preview
- * - User presses R to reset
+ * - User presses R to reset rotation
+ * - User presses ENTER to Confirm (initialize builder session)
+ * - User presses BACKSPACE to Cancel (clear placement only)
  */
 public final class VoxelBuilderPreviewHotkeys {
 
     private static final String MODID = "voxelbuilder";
 
-    // Custom category (shows in Controls menu)
-    private static final KeyMapping.Category CATEGORY =
-            new KeyMapping.Category(ResourceLocation.fromNamespaceAndPath(MODID, "preview"));
+    // Key category is a translation key string in 1.21.x
+    private static final String CATEGORY = "key.categories.voxelbuilder";
 
-    public static final Lazy<KeyMapping> ROT_X = Lazy.of(() ->
-            new KeyMapping("key.voxelbuilder.rotate_x", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_X, CATEGORY)
+    private static final KeyMapping ROT_X = new KeyMapping(
+            "key.voxelbuilder.rotate_x",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_X,
+            CATEGORY
     );
 
-    public static final Lazy<KeyMapping> ROT_Y = Lazy.of(() ->
-            new KeyMapping("key.voxelbuilder.rotate_y", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_Y, CATEGORY)
+    private static final KeyMapping ROT_Y = new KeyMapping(
+            "key.voxelbuilder.rotate_y",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_Y,
+            CATEGORY
     );
 
-    public static final Lazy<KeyMapping> ROT_Z = Lazy.of(() ->
-            new KeyMapping("key.voxelbuilder.rotate_z", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_Z, CATEGORY)
+    private static final KeyMapping ROT_Z = new KeyMapping(
+            "key.voxelbuilder.rotate_z",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_Z,
+            CATEGORY
     );
 
-    public static final Lazy<KeyMapping> RESET = Lazy.of(() ->
-            new KeyMapping("key.voxelbuilder.rotate_reset", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_R, CATEGORY)
+    private static final KeyMapping RESET = new KeyMapping(
+            "key.voxelbuilder.rotate_reset",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_R,
+            CATEGORY
+    );
+
+    private static final KeyMapping CONFIRM = new KeyMapping(
+            "key.voxelbuilder.confirm_build",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_ENTER,
+            CATEGORY
+    );
+
+    private static final KeyMapping CANCEL = new KeyMapping(
+            "key.voxelbuilder.cancel_build",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_BACKSPACE,
+            CATEGORY
     );
 
     // Stored degrees (render-only)
@@ -65,12 +92,12 @@ public final class VoxelBuilderPreviewHotkeys {
 
         @SubscribeEvent
         public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
-            event.registerCategory(CATEGORY);
-
-            event.register(ROT_X.get());
-            event.register(ROT_Y.get());
-            event.register(ROT_Z.get());
-            event.register(RESET.get());
+            event.register(ROT_X);
+            event.register(ROT_Y);
+            event.register(ROT_Z);
+            event.register(RESET);
+            event.register(CONFIRM);
+            event.register(CANCEL);
         }
     }
 
@@ -86,31 +113,71 @@ public final class VoxelBuilderPreviewHotkeys {
             Minecraft mc = Minecraft.getInstance();
             if (mc == null) return;
 
-            // Only rotate when:
-            // - placement mode is armed
-            // - no screen is open (player can see world)
-            if (!GhostPreviewDebugRenderer.isPlacementArmed()) return;
+            // We only act when no UI is open (world view).
             if (mc.screen != null) return;
 
-            // Use consumeClick (NeoForge docs recommended pattern)
-            while (ROT_X.get().consumeClick()) {
+            // Rotation: allow while placement is active OR anchor is locked (depends on your renderer logic).
+            // We don't hard-gate it, because different renderer versions use different "armed/locked" semantics.
+            while (ROT_X.consumeClick()) {
                 rx = (rx + 90) % 360;
                 GhostPreviewDebugRenderer.setPreviewRotationX(rx);
             }
 
-            while (ROT_Y.get().consumeClick()) {
+            while (ROT_Y.consumeClick()) {
                 ry = (ry + 90) % 360;
                 GhostPreviewDebugRenderer.setPreviewRotationY(ry);
             }
 
-            while (ROT_Z.get().consumeClick()) {
+            while (ROT_Z.consumeClick()) {
                 rz = (rz + 90) % 360;
                 GhostPreviewDebugRenderer.setPreviewRotationZ(rz);
             }
 
-            while (RESET.get().consumeClick()) {
+            while (RESET.consumeClick()) {
                 rx = 0; ry = 0; rz = 0;
                 GhostPreviewDebugRenderer.resetPreviewRotation();
+            }
+
+            // Confirm: only when we have an anchor + a plan
+            while (CONFIRM.consumeClick()) {
+                BuildPlan plan = GhostPreviewDebugRenderer.getPreview();
+                BlockPos anchor = GhostPreviewDebugRenderer.getAnchorPos(); // matches your current API
+
+                if (plan == null || anchor == null) {
+                    if (mc.player != null) {
+                        mc.player.displayClientMessage(
+                                net.minecraft.network.chat.Component.literal("No anchored preview to confirm."),
+                                true
+                        );
+                    }
+                    continue;
+                }
+
+                VoxelBuilderSession.start(plan, anchor, rx, ry, rz);
+
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal(
+                                    "Confirmed: anchor=" + anchor.getX() + "," + anchor.getY() + "," + anchor.getZ() +
+                                    " rot=(" + rx + "," + ry + "," + rz + ") blocks=" + plan.getBlockCount()
+                            ),
+                            false
+                    );
+                }
+            }
+
+            // Cancel: clear placement/anchor only (do NOT clear preview plan)
+            while (CANCEL.consumeClick()) {
+                GhostPreviewDebugRenderer.clearPlacement();
+                rx = 0; ry = 0; rz = 0;
+                GhostPreviewDebugRenderer.resetPreviewRotation();
+
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal("Cancelled preview placement."),
+                            true
+                    );
+                }
             }
         }
     }

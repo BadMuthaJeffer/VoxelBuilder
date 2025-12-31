@@ -1,8 +1,8 @@
 package com.voxelbuilder.client.input;
 
-import com.voxelbuilder.client.render.GhostPreviewDebugRenderer;
-
 import com.mojang.blaze3d.platform.InputConstants;
+import com.voxelbuilder.client.build.VoxelBuilderSession;
+import com.voxelbuilder.client.render.GhostPreviewDebugRenderer;
 
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -17,17 +17,14 @@ import org.lwjgl.glfw.GLFW;
 /**
  * Hotkeys for preview rotation while the ghost is visible (screen closed).
  *
- * Flow supported:
- * - User presses Place Build (arms placement, closes GUI)
- * - User right-clicks block to anchor
- * - User presses X / Y / Z to rotate preview
- * - User presses R to reset
+ * X / Y / Z : rotate +90 around axis
+ * R         : reset rotations to 0
+ * ENTER     : confirm (locks rotation so it cannot be changed accidentally)
+ * BACKSPACE : cancel (clears confirmed state + unlocks rotation + resets rotations)
  */
 public final class VoxelBuilderPreviewHotkeys {
 
     private static final String MODID = "voxelbuilder";
-
-    // Key category is a translation key string in 1.21.x (no KeyMapping.Category type)
     private static final String CATEGORY = "key.categories.voxelbuilder";
 
     private static final KeyMapping ROT_X = new KeyMapping(
@@ -58,10 +55,27 @@ public final class VoxelBuilderPreviewHotkeys {
             CATEGORY
     );
 
+    private static final KeyMapping CONFIRM = new KeyMapping(
+            "key.voxelbuilder.confirm_build",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_ENTER,
+            CATEGORY
+    );
+
+    private static final KeyMapping CANCEL = new KeyMapping(
+            "key.voxelbuilder.cancel_build",
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_BACKSPACE,
+            CATEGORY
+    );
+
     // Stored degrees (render-only)
     private static int rx = 0;
     private static int ry = 0;
     private static int rz = 0;
+
+    // When true: rotation hotkeys are ignored (preview is "locked" after confirm)
+    private static boolean rotationLocked = false;
 
     private VoxelBuilderPreviewHotkeys() {}
 
@@ -78,6 +92,8 @@ public final class VoxelBuilderPreviewHotkeys {
             event.register(ROT_Y);
             event.register(ROT_Z);
             event.register(RESET);
+            event.register(CONFIRM);
+            event.register(CANCEL);
         }
     }
 
@@ -93,10 +109,54 @@ public final class VoxelBuilderPreviewHotkeys {
             Minecraft mc = Minecraft.getInstance();
             if (mc == null) return;
 
-            // Only rotate when placement mode is armed and no UI is open
-            if (!GhostPreviewDebugRenderer.isPlacementArmed()) return;
+            // Only when no GUI is open
             if (mc.screen != null) return;
 
+            // Confirm (locks rotation)
+            while (CONFIRM.consumeClick()) {
+                // You already have a working session start elsewhere.
+                // This file's job is: lock rotation after confirm so the ghost can't be changed accidentally.
+                rotationLocked = true;
+
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal("Confirmed. Rotation locked (Backspace to cancel)."),
+                            true
+                    );
+                }
+            }
+
+            // Cancel (unlocks + resets)
+            while (CANCEL.consumeClick()) {
+                rotationLocked = false;
+
+                rx = 0; ry = 0; rz = 0;
+                GhostPreviewDebugRenderer.resetPreviewRotation();
+
+                // Clear builder session if you’re using it
+                try {
+                    VoxelBuilderSession.clear();
+                } catch (Throwable ignored) {}
+
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal("Cancelled. Rotation unlocked."),
+                            true
+                    );
+                }
+            }
+
+            // If confirmed/locked: ignore rotation keys completely
+            if (rotationLocked) {
+                // Still consume clicks so keys don't “queue up”
+                while (ROT_X.consumeClick()) {}
+                while (ROT_Y.consumeClick()) {}
+                while (ROT_Z.consumeClick()) {}
+                while (RESET.consumeClick()) {}
+                return;
+            }
+
+            // Rotation keys (unlocked)
             while (ROT_X.consumeClick()) {
                 rx = (rx + 90) % 360;
                 GhostPreviewDebugRenderer.setPreviewRotationX(rx);
