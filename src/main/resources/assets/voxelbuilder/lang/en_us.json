@@ -1,0 +1,13 @@
+{
+  "itemGroup.voxelbuilder": "Example Mod Tab",
+  "block.voxelbuilder.example_block": "Example Block",
+  "item.voxelbuilder.example_item": "Example Item",
+
+  "voxelbuilder.configuration.title": "Voxel Builder Configs",
+  "voxelbuilder.configuration.section.voxelbuilder.common.toml": "Voxel Builder Configs",
+  "voxelbuilder.configuration.section.voxelbuilder.common.toml.title": "Voxel Builder Configs",
+  "voxelbuilder.configuration.items": "Item List",
+  "voxelbuilder.configuration.logDirtBlock": "Log Dirt Block",
+  "voxelbuilder.configuration.magicNumberIntroduction": "Magic Number Text",
+  "voxelbuilder.configuration.magicNumber": "Magic Number"
+}
