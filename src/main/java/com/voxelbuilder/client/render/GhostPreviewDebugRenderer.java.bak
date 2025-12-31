@@ -21,6 +21,8 @@ import java.util.List;
  *
  * Render-only rotation and render-only anchoring offset.
  * Does NOT mutate build plan or world.
+ *
+ * Pivot mode: CENTER of model bounds (in min-shifted space).
  */
 public final class GhostPreviewDebugRenderer {
 
@@ -34,11 +36,21 @@ public final class GhostPreviewDebugRenderer {
     private static float rotY = 0f;
     private static float rotZ = 0f;
 
-    // Cached min-corner so preview starts at the anchor block (no empty gap)
+    // Cached bounds / min-corner so preview starts at the anchor block (no empty gap)
     private static int minPX = 0;
     private static int minPY = 0;
     private static int minPZ = 0;
-    private static boolean hasMinCorner = false;
+
+    private static int maxPX = 0;
+    private static int maxPY = 0;
+    private static int maxPZ = 0;
+
+    // Cached pivot in "min-shifted" local space
+    private static double pivotX = 0.0;
+    private static double pivotY = 0.0;
+    private static double pivotZ = 0.0;
+
+    private static boolean hasBounds = false;
 
     private GhostPreviewDebugRenderer() {}
 
@@ -48,16 +60,18 @@ public final class GhostPreviewDebugRenderer {
 
     public static void setPreview(BuildPlan plan) {
         previewPlan = plan;
-        cacheMinCornerFromPlan();
+        cacheBoundsAndPivotFromPlan();
     }
 
     public static BuildPlan getPreview() {
         return previewPlan;
     }
 
-    private static void cacheMinCornerFromPlan() {
-        hasMinCorner = false;
+    private static void cacheBoundsAndPivotFromPlan() {
+        hasBounds = false;
         minPX = minPY = minPZ = 0;
+        maxPX = maxPY = maxPZ = 0;
+        pivotX = pivotY = pivotZ = 0.0;
 
         if (previewPlan == null) return;
         List<BuildPlan.BlockPos3> blocks = previewPlan.getBlocks();
@@ -67,17 +81,36 @@ public final class GhostPreviewDebugRenderer {
         int minY = Integer.MAX_VALUE;
         int minZ = Integer.MAX_VALUE;
 
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+
         for (BuildPlan.BlockPos3 p : blocks) {
-            // Your BlockPos3 appears to use public fields (p.x / p.y / p.z)
+            // BlockPos3 uses public fields (p.x / p.y / p.z)
             if (p.x < minX) minX = p.x;
             if (p.y < minY) minY = p.y;
             if (p.z < minZ) minZ = p.z;
+
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+            if (p.z > maxZ) maxZ = p.z;
         }
 
-        minPX = minX;
-        minPY = minY;
-        minPZ = minZ;
-        hasMinCorner = true;
+        minPX = minX; minPY = minY; minPZ = minZ;
+        maxPX = maxX; maxPY = maxY; maxPZ = maxZ;
+
+        // Size in blocks
+        int sizeX = (maxPX - minPX) + 1;
+        int sizeY = (maxPY - minPY) + 1;
+        int sizeZ = (maxPZ - minPZ) + 1;
+
+        // Pivot at center of bounds in min-shifted space.
+        // Using size/2 keeps pivot centered between blocks for even sizes.
+        pivotX = sizeX / 2.0;
+        pivotY = sizeY / 2.0;
+        pivotZ = sizeZ / 2.0;
+
+        hasBounds = true;
     }
 
     /* =========================
@@ -163,8 +196,8 @@ public final class GhostPreviewDebugRenderer {
             );
         }
 
-        // Ensure min-corner cache exists
-        if (!hasMinCorner) cacheMinCornerFromPlan();
+        // Ensure bounds/pivot cache exists
+        if (!hasBounds) cacheBoundsAndPivotFromPlan();
 
         poseStack.pushPose();
 
@@ -175,12 +208,20 @@ public final class GhostPreviewDebugRenderer {
                 basePos.getZ() - camZ
         );
 
-        // Render-only rotation around MODEL ORIGIN
+        // === CENTER PIVOT ROTATION ===
+        // Work in min-shifted local space:
+        //  1) translate to pivot
+        //  2) rotate
+        //  3) translate back
+        poseStack.translate(pivotX, pivotY, pivotZ);
+
         if (rotX != 0f) poseStack.mulPose(Axis.XP.rotationDegrees(rotX));
         if (rotY != 0f) poseStack.mulPose(Axis.YP.rotationDegrees(rotY));
         if (rotZ != 0f) poseStack.mulPose(Axis.ZP.rotationDegrees(rotZ));
 
-        // Key fix: subtract min corner so model starts at anchor block (no empty gap)
+        poseStack.translate(-pivotX, -pivotY, -pivotZ);
+
+        // Draw each voxel as a wireframe cube, snapped to min corner at the anchor
         for (BuildPlan.BlockPos3 p : blocks) {
             double x = (p.x - minPX);
             double y = (p.y - minPY);

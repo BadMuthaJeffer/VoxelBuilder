@@ -1,13 +1,11 @@
 package com.voxelbuilder.client.input;
 
 import com.mojang.blaze3d.platform.InputConstants;
-import com.voxelbuilder.client.build.BuildPlan;
 import com.voxelbuilder.client.build.VoxelBuilderSession;
 import com.voxelbuilder.client.render.GhostPreviewDebugRenderer;
 
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.BlockPos;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -19,19 +17,14 @@ import org.lwjgl.glfw.GLFW;
 /**
  * Hotkeys for preview rotation while the ghost is visible (screen closed).
  *
- * Supported flow:
- * - User presses Place Build (arms placement, closes GUI)
- * - User right-clicks block to anchor (locks preview position)
- * - User presses X / Y / Z to rotate preview
- * - User presses R to reset rotation
- * - User presses ENTER to Confirm (initialize builder session)
- * - User presses BACKSPACE to Cancel (clear placement only)
+ * X / Y / Z : rotate +90 around axis
+ * R         : reset rotations to 0
+ * ENTER     : confirm (locks rotation + turns ghost red)
+ * BACKSPACE : cancel (unlocks + resets rotations + clears session)
  */
 public final class VoxelBuilderPreviewHotkeys {
 
     private static final String MODID = "voxelbuilder";
-
-    // Key category is a translation key string in 1.21.x
     private static final String CATEGORY = "key.categories.voxelbuilder";
 
     private static final KeyMapping ROT_X = new KeyMapping(
@@ -81,6 +74,9 @@ public final class VoxelBuilderPreviewHotkeys {
     private static int ry = 0;
     private static int rz = 0;
 
+    // When true: rotation hotkeys are ignored (preview is "locked" after confirm)
+    private static boolean rotationLocked = false;
+
     private VoxelBuilderPreviewHotkeys() {}
 
     /* =========================
@@ -113,11 +109,52 @@ public final class VoxelBuilderPreviewHotkeys {
             Minecraft mc = Minecraft.getInstance();
             if (mc == null) return;
 
-            // We only act when no UI is open (world view).
+            // Only when no GUI is open
             if (mc.screen != null) return;
 
-            // Rotation: allow while placement is active OR anchor is locked (depends on your renderer logic).
-            // We don't hard-gate it, because different renderer versions use different "armed/locked" semantics.
+            // Confirm: lock rotation and flip ghost color to RED so it's obvious Enter worked
+            while (CONFIRM.consumeClick()) {
+                rotationLocked = true;
+                GhostPreviewDebugRenderer.setPreviewLocked(true);
+
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal("Confirmed. Preview locked (red). Backspace to cancel."),
+                            true
+                    );
+                }
+            }
+
+            // Cancel: unlock + reset + clear session and flip ghost color back
+            while (CANCEL.consumeClick()) {
+                rotationLocked = false;
+                GhostPreviewDebugRenderer.setPreviewLocked(false);
+
+                rx = 0; ry = 0; rz = 0;
+                GhostPreviewDebugRenderer.resetPreviewRotation();
+
+                try {
+                    VoxelBuilderSession.clear();
+                } catch (Throwable ignored) {}
+
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                            net.minecraft.network.chat.Component.literal("Cancelled. Preview unlocked."),
+                            true
+                    );
+                }
+            }
+
+            // If confirmed/locked: ignore rotation keys completely (but consume them so they don't queue up)
+            if (rotationLocked) {
+                while (ROT_X.consumeClick()) {}
+                while (ROT_Y.consumeClick()) {}
+                while (ROT_Z.consumeClick()) {}
+                while (RESET.consumeClick()) {}
+                return;
+            }
+
+            // Rotation keys (unlocked)
             while (ROT_X.consumeClick()) {
                 rx = (rx + 90) % 360;
                 GhostPreviewDebugRenderer.setPreviewRotationX(rx);
@@ -136,48 +173,6 @@ public final class VoxelBuilderPreviewHotkeys {
             while (RESET.consumeClick()) {
                 rx = 0; ry = 0; rz = 0;
                 GhostPreviewDebugRenderer.resetPreviewRotation();
-            }
-
-            // Confirm: only when we have an anchor + a plan
-            while (CONFIRM.consumeClick()) {
-                BuildPlan plan = GhostPreviewDebugRenderer.getPreview();
-                BlockPos anchor = GhostPreviewDebugRenderer.getAnchorPos(); // matches your current API
-
-                if (plan == null || anchor == null) {
-                    if (mc.player != null) {
-                        mc.player.displayClientMessage(
-                                net.minecraft.network.chat.Component.literal("No anchored preview to confirm."),
-                                true
-                        );
-                    }
-                    continue;
-                }
-
-                VoxelBuilderSession.start(plan, anchor, rx, ry, rz);
-
-                if (mc.player != null) {
-                    mc.player.displayClientMessage(
-                            net.minecraft.network.chat.Component.literal(
-                                    "Confirmed: anchor=" + anchor.getX() + "," + anchor.getY() + "," + anchor.getZ() +
-                                    " rot=(" + rx + "," + ry + "," + rz + ") blocks=" + plan.getBlockCount()
-                            ),
-                            false
-                    );
-                }
-            }
-
-            // Cancel: clear placement/anchor only (do NOT clear preview plan)
-            while (CANCEL.consumeClick()) {
-                GhostPreviewDebugRenderer.clearPlacement();
-                rx = 0; ry = 0; rz = 0;
-                GhostPreviewDebugRenderer.resetPreviewRotation();
-
-                if (mc.player != null) {
-                    mc.player.displayClientMessage(
-                            net.minecraft.network.chat.Component.literal("Cancelled preview placement."),
-                            true
-                    );
-                }
             }
         }
     }

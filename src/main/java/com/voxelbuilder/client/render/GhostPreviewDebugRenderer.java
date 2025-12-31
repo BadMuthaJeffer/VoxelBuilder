@@ -1,9 +1,9 @@
 package com.voxelbuilder.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-
 import com.voxelbuilder.client.build.BuildPlan;
 
+import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -17,133 +17,76 @@ import com.mojang.math.Axis;
 import java.util.List;
 
 /**
- * Ghost preview renderer (wireframe cubes).
+ * Ghost preview renderer (debug line boxes).
  *
- * Render-only rotation and render-only anchoring offset.
- * Does NOT mutate build plan or world.
- *
- * Pivot mode: CENTER of model bounds (in min-shifted space).
+ * LOCKED INTENT:
+ * - Preview data (BuildPlan) must NOT be cleared by cancel/reset placement.
+ * - Preview should only render once the anchor is locked (right-clicked).
+ * - Rotation is render-only (PoseStack) and should NOT rebuild the plan.
  */
 public final class GhostPreviewDebugRenderer {
 
     private static BuildPlan previewPlan = null;
 
     private static boolean placementArmed = false;
+    private static boolean anchorLocked = false;
     private static BlockPos anchorPos = null;
+
+    private static double previewScale = 1.0;
 
     // Render-only rotation (degrees)
     private static float rotX = 0f;
     private static float rotY = 0f;
     private static float rotZ = 0f;
 
-    // Cached bounds / min-corner so preview starts at the anchor block (no empty gap)
-    private static int minPX = 0;
-    private static int minPY = 0;
-    private static int minPZ = 0;
+    // Confirm/lock indicator (used for color)
+    private static boolean previewLocked = false;
 
-    private static int maxPX = 0;
-    private static int maxPY = 0;
-    private static int maxPZ = 0;
-
-    // Cached pivot in "min-shifted" local space
-    private static double pivotX = 0.0;
-    private static double pivotY = 0.0;
-    private static double pivotZ = 0.0;
-
-    private static boolean hasBounds = false;
+    // Cached bounds/pivot in min-shifted space (prevents empty gap + enables centered pivot rotation)
+    private static boolean boundsValid = false;
+    private static int minX = 0, minY = 0, minZ = 0;
+    private static int maxX = 0, maxY = 0, maxZ = 0;
+    private static double pivotX = 0.0, pivotY = 0.0, pivotZ = 0.0;
 
     private GhostPreviewDebugRenderer() {}
 
-    /* =========================
-     * Preview data
-     * ========================= */
+    // =========================
+    // Preview data
+    // =========================
 
     public static void setPreview(BuildPlan plan) {
         previewPlan = plan;
-        cacheBoundsAndPivotFromPlan();
+        recacheBounds();
     }
 
     public static BuildPlan getPreview() {
         return previewPlan;
     }
 
-    private static void cacheBoundsAndPivotFromPlan() {
-        hasBounds = false;
-        minPX = minPY = minPZ = 0;
-        maxPX = maxPY = maxPZ = 0;
-        pivotX = pivotY = pivotZ = 0.0;
-
-        if (previewPlan == null) return;
-        List<BuildPlan.BlockPos3> blocks = previewPlan.getBlocks();
-        if (blocks == null || blocks.isEmpty()) return;
-
-        int minX = Integer.MAX_VALUE;
-        int minY = Integer.MAX_VALUE;
-        int minZ = Integer.MAX_VALUE;
-
-        int maxX = Integer.MIN_VALUE;
-        int maxY = Integer.MIN_VALUE;
-        int maxZ = Integer.MIN_VALUE;
-
-        for (BuildPlan.BlockPos3 p : blocks) {
-            // BlockPos3 uses public fields (p.x / p.y / p.z)
-            if (p.x < minX) minX = p.x;
-            if (p.y < minY) minY = p.y;
-            if (p.z < minZ) minZ = p.z;
-
-            if (p.x > maxX) maxX = p.x;
-            if (p.y > maxY) maxY = p.y;
-            if (p.z > maxZ) maxZ = p.z;
-        }
-
-        minPX = minX; minPY = minY; minPZ = minZ;
-        maxPX = maxX; maxPY = maxY; maxPZ = maxZ;
-
-        // Size in blocks
-        int sizeX = (maxPX - minPX) + 1;
-        int sizeY = (maxPY - minPY) + 1;
-        int sizeZ = (maxPZ - minPZ) + 1;
-
-        // Pivot at center of bounds in min-shifted space.
-        // Using size/2 keeps pivot centered between blocks for even sizes.
-        pivotX = sizeX / 2.0;
-        pivotY = sizeY / 2.0;
-        pivotZ = sizeZ / 2.0;
-
-        hasBounds = true;
+    public static void setPreviewScale(double scale) {
+        if (scale <= 0.0001) scale = 0.0001;
+        previewScale = scale;
     }
 
-    /* =========================
-     * Placement state
-     * ========================= */
-
-    public static void armPlacement() {
-        placementArmed = true;
+    public static double getPreviewScale() {
+        return previewScale;
     }
 
-    public static void disarmPlacement() {
-        placementArmed = false;
+    // =========================
+    // Confirm/lock (color indicator)
+    // =========================
+
+    public static void setPreviewLocked(boolean locked) {
+        previewLocked = locked;
     }
 
-    public static boolean isPlacementArmed() {
-        return placementArmed;
+    public static boolean isPreviewLocked() {
+        return previewLocked;
     }
 
-    public static void setAnchor(BlockPos pos) {
-        anchorPos = pos;
-    }
-
-    public static BlockPos getAnchor() {
-        return anchorPos;
-    }
-
-    public static void clearAnchor() {
-        anchorPos = null;
-    }
-
-    /* =========================
-     * Rotation setters (HOTKEYS)
-     * ========================= */
+    // =========================
+    // Rotation (render-only)
+    // =========================
 
     public static void setPreviewRotationX(float deg) { rotX = deg; }
     public static void setPreviewRotationY(float deg) { rotY = deg; }
@@ -159,84 +102,177 @@ public final class GhostPreviewDebugRenderer {
         rotZ = 0f;
     }
 
-    /* =========================
-     * Render entrypoints
-     * ========================= */
+    // =========================
+    // Placement state
+    // =========================
 
-    public static void render(PoseStack poseStack) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc == null || mc.level == null || mc.player == null) return;
+    public static void armPlacement() {
+        placementArmed = true;
+        // Do not change previewPlan here.
+        // Do not force anchorLocked false here (player may be re-placing).
+        anchorLocked = false;
+        anchorPos = null;
 
-        MultiBufferSource.BufferSource bufferSource = mc.renderBuffers().bufferSource();
-        Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
-        render(poseStack, bufferSource, cam.x, cam.y, cam.z);
-        // DO NOT endBatch() here.
+        // When placing again, treat as "not confirmed"
+        previewLocked = false;
     }
 
-    public static void render(PoseStack poseStack, MultiBufferSource bufferSource, double camX, double camY, double camZ) {
-        if (!placementArmed) return;
-        if (previewPlan == null) return;
+    public static boolean isPlacementArmed() {
+        return placementArmed;
+    }
 
-        List<BuildPlan.BlockPos3> blocks = previewPlan.getBlocks();
-        if (blocks == null || blocks.isEmpty()) return;
+    public static boolean isAnchorLocked() {
+        return anchorLocked && anchorPos != null;
+    }
+
+    public static BlockPos getAnchorPos() {
+        return anchorPos;
+    }
+
+    /**
+     * Called by PreviewPlacementHandler when the player right-clicks a block.
+     * This locks the anchor and ends placement mode.
+     */
+    public static void setAnchor(BlockPos pos) {
+        if (pos == null) return;
+        anchorPos = pos;
+        anchorLocked = true;
+        placementArmed = false;
+    }
+
+    /**
+     * Cancels placement/anchor WITHOUT clearing preview data.
+     * This is the critical regression fix.
+     */
+    public static void clearPlacement() {
+        placementArmed = false;
+        anchorLocked = false;
+        anchorPos = null;
+
+        // DO NOT clear previewPlan here.
+        // previewPlan is owned by the controller UI and must persist.
+
+        previewLocked = false;
+    }
+
+    // =========================
+    // Rendering
+    // =========================
+
+    /**
+     * Render the preview as wireframe boxes.
+     * This method is called from VoxelBuilderClientRenderEvents during a world render stage.
+     */
+    public static void render(PoseStack poseStack) {
+        if (poseStack == null) return;
+
+        BuildPlan plan = previewPlan;
+        if (plan == null) return;
+
+        // Only render when we have a locked anchor.
+        // (Avoid the "moves with player" regression.)
+        if (!isAnchorLocked()) return;
 
         Minecraft mc = Minecraft.getInstance();
-        if (mc == null || mc.level == null || mc.player == null) return;
+        if (mc.level == null) return;
 
-        BlockPos basePos = anchorPos;
+        Camera cam = mc.gameRenderer.getMainCamera();
+        Vec3 camPos = cam.getPosition();
 
-        // If no anchor yet, show floating in front of player
-        if (basePos == null) {
-            Vec3 eye = mc.player.getEyePosition(1.0f);
-            Vec3 look = mc.player.getLookAngle();
-            basePos = BlockPos.containing(
-                    eye.x + look.x * 4,
-                    eye.y + look.y * 4,
-                    eye.z + look.z * 4
-            );
-        }
+        MultiBufferSource.BufferSource bufferSource = mc.renderBuffers().bufferSource();
 
-        // Ensure bounds/pivot cache exists
-        if (!hasBounds) cacheBoundsAndPivotFromPlan();
+        List<BuildPlan.BlockPos3> blocks = plan.getBlocks();
+        if (blocks == null || blocks.isEmpty()) return;
+
+        if (!boundsValid) recacheBounds();
 
         poseStack.pushPose();
 
-        // Move preview into world space
+        // Anchor to world position relative to camera
         poseStack.translate(
-                basePos.getX() - camX,
-                basePos.getY() - camY,
-                basePos.getZ() - camZ
+                anchorPos.getX() - camPos.x,
+                anchorPos.getY() - camPos.y,
+                anchorPos.getZ() - camPos.z
         );
 
-        // === CENTER PIVOT ROTATION ===
-        // Work in min-shifted local space:
-        //  1) translate to pivot
-        //  2) rotate
-        //  3) translate back
-        poseStack.translate(pivotX, pivotY, pivotZ);
+        // Rotate around CENTER PIVOT (in min-shifted local space)
+        poseStack.translate(pivotX * previewScale, pivotY * previewScale, pivotZ * previewScale);
 
         if (rotX != 0f) poseStack.mulPose(Axis.XP.rotationDegrees(rotX));
         if (rotY != 0f) poseStack.mulPose(Axis.YP.rotationDegrees(rotY));
         if (rotZ != 0f) poseStack.mulPose(Axis.ZP.rotationDegrees(rotZ));
 
-        poseStack.translate(-pivotX, -pivotY, -pivotZ);
+        poseStack.translate(-pivotX * previewScale, -pivotY * previewScale, -pivotZ * previewScale);
 
-        // Draw each voxel as a wireframe cube, snapped to min corner at the anchor
+        // Color: cyan when unlocked, red when locked/confirmed
+        final float r = previewLocked ? 1.0f : 0.0f;
+        final float g = previewLocked ? 0.0f : 1.0f;
+        final float b = previewLocked ? 0.0f : 1.0f;
+        final float a = 1.0f;
+
         for (BuildPlan.BlockPos3 p : blocks) {
-            double x = (p.x - minPX);
-            double y = (p.y - minPY);
-            double z = (p.z - minPZ);
+            // Remove empty gap by shifting by min corner before drawing
+            double lx = (p.x - minX) * previewScale;
+            double ly = (p.y - minY) * previewScale;
+            double lz = (p.z - minZ) * previewScale;
 
-            AABB box = new AABB(x, y, z, x + 1.0, y + 1.0, z + 1.0);
+            AABB box = new AABB(
+                    lx, ly, lz,
+                    lx + previewScale, ly + previewScale, lz + previewScale
+            );
 
             LevelRenderer.renderLineBox(
                     poseStack,
                     bufferSource.getBuffer(RenderType.lines()),
                     box,
-                    0.0f, 1.0f, 1.0f, 1.0f
+                    r, g, b, a
             );
         }
 
         poseStack.popPose();
+        bufferSource.endBatch();
+    }
+
+    // =========================
+    // Bounds cache
+    // =========================
+
+    private static void recacheBounds() {
+        boundsValid = false;
+        minX = minY = minZ = 0;
+        maxX = maxY = maxZ = 0;
+        pivotX = pivotY = pivotZ = 0.0;
+
+        BuildPlan plan = previewPlan;
+        if (plan == null) return;
+
+        List<BuildPlan.BlockPos3> blocks = plan.getBlocks();
+        if (blocks == null || blocks.isEmpty()) return;
+
+        int miX = Integer.MAX_VALUE, miY = Integer.MAX_VALUE, miZ = Integer.MAX_VALUE;
+        int maX = Integer.MIN_VALUE, maY = Integer.MIN_VALUE, maZ = Integer.MIN_VALUE;
+
+        for (BuildPlan.BlockPos3 p : blocks) {
+            if (p.x < miX) miX = p.x;
+            if (p.y < miY) miY = p.y;
+            if (p.z < miZ) miZ = p.z;
+
+            if (p.x > maX) maX = p.x;
+            if (p.y > maY) maY = p.y;
+            if (p.z > maZ) maZ = p.z;
+        }
+
+        minX = miX; minY = miY; minZ = miZ;
+        maxX = maX; maxY = maY; maxZ = maZ;
+
+        int sizeX = (maxX - minX) + 1;
+        int sizeY = (maxY - minY) + 1;
+        int sizeZ = (maxZ - minZ) + 1;
+
+        pivotX = sizeX / 2.0;
+        pivotY = sizeY / 2.0;
+        pivotZ = sizeZ / 2.0;
+
+        boundsValid = true;
     }
 }
