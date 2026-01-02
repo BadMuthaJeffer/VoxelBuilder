@@ -1,6 +1,7 @@
 package com.voxelbuilder.client.screen;
 
 import com.voxelbuilder.client.build.BuildPlan;
+import com.voxelbuilder.client.build.VoxelBuilderSession;
 import com.voxelbuilder.client.model.ModelNormalizer;
 import com.voxelbuilder.client.render.GhostPreviewDebugRenderer;
 import com.voxelbuilder.client.voxel.STLAsciiLoader;
@@ -11,6 +12,8 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -34,6 +37,30 @@ public class VoxelBuilderControllerScreen extends Screen {
     private enum Tab { MODELS, PREVIEW, BUILD, SETTINGS }
     private enum OriginMode { CORNER, CENTER }
     private enum ModelType { STL_FILE, CSV_FILE, CSV_FOLDER }
+
+    // === ADDED: Resolution presets (STL only) ===
+    private enum ResolutionPreset {
+        VERY_HIGH("Max/1:1", 256),
+        HIGH("High", 128),
+        MEDIUM("Med", 64),
+        LOW("Low", 32);
+
+        final String label;
+        final int resolution;
+
+        ResolutionPreset(String label, int resolution) {
+            this.label = label;
+            this.resolution = resolution;
+        }
+
+        ResolutionPreset next() {
+            // Cycle: LOW -> MEDIUM -> HIGH -> VERY_HIGH -> LOW
+            if (this == LOW) return MEDIUM;
+            if (this == MEDIUM) return HIGH;
+            if (this == HIGH) return VERY_HIGH;
+            return LOW;
+        }
+    }
 
     private static final class ModelEntry {
         final ModelType type;
@@ -67,6 +94,8 @@ public class VoxelBuilderControllerScreen extends Screen {
      * ========================= */
 
     private Button refreshButton;
+    private Button resolutionButton; // ADDED
+    private Button blockButton; // ADDED
     private Button rotateButton;
     private Button originButton;
     private Button hollowButton;
@@ -81,6 +110,21 @@ public class VoxelBuilderControllerScreen extends Screen {
     private int rotation = 0;
     private OriginMode originMode = OriginMode.CORNER;
     private boolean hollow = false;
+
+    // ADDED
+    private ResolutionPreset resolutionPreset = ResolutionPreset.MEDIUM;
+
+    /* =========================
+     * Block selection (single-block)
+     * ========================= */
+
+    private static final BlockState[] BLOCK_OPTIONS = new BlockState[] {
+            Blocks.STONE.defaultBlockState(),
+            Blocks.COBBLESTONE.defaultBlockState(),
+            Blocks.STONE_BRICKS.defaultBlockState(),
+            Blocks.GLASS.defaultBlockState()
+    };
+    private int blockIndex = 0;
 
     /* =========================
      * Metadata
@@ -123,19 +167,40 @@ public class VoxelBuilderControllerScreen extends Screen {
 
         int startX = panelX + (PANEL_WIDTH - (tabW * 4 + gap * 3)) / 2;
 
-        addRenderableWidget(Button.builder(Component.literal("Models"), b -> activeTab = Tab.MODELS)
+        addRenderableWidget(Button.builder(Component.literal("Models"), btn -> activeTab = Tab.MODELS)
                 .bounds(startX, tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Preview"), b -> activeTab = Tab.PREVIEW)
+        addRenderableWidget(Button.builder(Component.literal("Preview"), btn -> activeTab = Tab.PREVIEW)
                 .bounds(startX + (tabW + gap), tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Build"), b -> activeTab = Tab.BUILD)
+        addRenderableWidget(Button.builder(Component.literal("Build"), btn -> activeTab = Tab.BUILD)
                 .bounds(startX + 2 * (tabW + gap), tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Settings"), b -> activeTab = Tab.SETTINGS)
+        addRenderableWidget(Button.builder(Component.literal("Settings"), btn -> activeTab = Tab.SETTINGS)
                 .bounds(startX + 3 * (tabW + gap), tabY, tabW, tabH).build());
 
         refreshButton = addRenderableWidget(
-                Button.builder(Component.literal("Refresh"), b -> loadModels())
+                Button.builder(Component.literal("Refresh"), btn -> loadModels())
                         .bounds(panelX + PANEL_WIDTH - 68, panelY + 6, 60, 16)
                         .build()
+        );
+
+        // === ADDED: Resolution picker (STL only, in Preview tab) ===
+        resolutionButton = addRenderableWidget(
+                Button.builder(Component.literal("Res"), btn -> {
+                    resolutionPreset = resolutionPreset.next();
+
+        blockButton = addRenderableWidget(
+                Button.builder(Component.literal("Block"), blockAction -> {
+                    cycleBlock();
+                }).bounds(panelX + 8, panelY + 6, 120, 16).build()
+        );
+
+        // init session block
+        VoxelBuilderSession.setSelectedBlock(BLOCK_OPTIONS[blockIndex]);
+        updateBlockButtonText();
+                    if (isStlSelected()) {
+                        // Re-voxelize STL at new resolution
+                        parseSelectedModel();
+                    }
+                }).bounds(panelX + PANEL_WIDTH - 144, panelY + 6, 72, 16).build()
         );
 
         int btnY = panelY + PANEL_HEIGHT - 22;
@@ -144,40 +209,40 @@ public class VoxelBuilderControllerScreen extends Screen {
         int btnX = panelX + 10;
 
         rotateButton = addRenderableWidget(
-                Button.builder(Component.literal("Rotate"), b -> {
+                Button.builder(Component.literal("Rotate"), btn -> {
                     rotation = (rotation + 90) % 360;
                     rebuildBuildPlan();
                 }).bounds(btnX, btnY, btnW, btnH).build()
         );
 
         originButton = addRenderableWidget(
-                Button.builder(Component.literal("Origin"), b -> {
+                Button.builder(Component.literal("Origin"), btn -> {
                     originMode = (originMode == OriginMode.CORNER ? OriginMode.CENTER : OriginMode.CORNER);
                     rebuildBuildPlan();
                 }).bounds(btnX + btnW + 6, btnY, btnW, btnH).build()
         );
 
         hollowButton = addRenderableWidget(
-                Button.builder(Component.literal("Hollow"), b -> {
+                Button.builder(Component.literal("Hollow"), btn -> {
                     hollow = !hollow;
                     rebuildBuildPlan();
                 }).bounds(btnX + (btnW + 6) * 2, btnY, btnW, btnH).build()
         );
 
         placeBuildButton = addRenderableWidget(
-                Button.builder(Component.literal("Place Build"), b -> {
+                Button.builder(Component.literal("Place Build"), btn -> {
                     GhostPreviewDebugRenderer.armPlacement();
                     minecraft.setScreen(null);
                 }).bounds(btnX + (btnW + 6) * 3, btnY, 80, btnH).build()
         );
 
         confirmButton = addRenderableWidget(
-                Button.builder(Component.literal("Confirm"), b -> minecraft.setScreen(null))
+                Button.builder(Component.literal("Confirm"), btn -> minecraft.setScreen(null))
                         .bounds(btnX, btnY - 20, 60, 16).build()
         );
 
         cancelButton = addRenderableWidget(
-                Button.builder(Component.literal("Cancel"), b -> minecraft.setScreen(this))
+                Button.builder(Component.literal("Cancel"), btn -> minecraft.setScreen(this))
                         .bounds(btnX + 66, btnY - 20, 60, 16).build()
         );
 
@@ -201,6 +266,15 @@ public class VoxelBuilderControllerScreen extends Screen {
         boolean previewActive = activeTab == Tab.PREVIEW && metadataValid;
 
         refreshButton.visible = activeTab == Tab.MODELS;
+
+
+        // Block selector: only relevant when preview is active
+        blockButton.visible = previewActive;
+        if (blockButton.visible) updateBlockButtonText();
+
+        // ADDED: only show when preview is active + STL selected
+        resolutionButton.visible = previewActive && isStlSelected();
+        resolutionButton.setMessage(Component.literal("Res " + resolutionPreset.label));
 
         rotateButton.visible = previewActive;
         originButton.visible = previewActive;
@@ -252,6 +326,13 @@ public class VoxelBuilderControllerScreen extends Screen {
         }
 
         g.drawString(font, "Voxels: " + voxelCount, x, y, 0xFFFFFF); y += 12;
+
+        // ADDED: show resolution info for STL
+        if (isStlSelected()) {
+            g.drawString(font, "Res: " + resolutionPreset.label + " (" + resolutionPreset.resolution + ")", x, y, 0xAAAAAA);
+            y += 12;
+        }
+
         g.drawString(font, "Size: " + getRotatedSizeX() + " x " + sizeY + " x " + getRotatedSizeZ(),
                 x, y, 0xFFFFFF);
     }
@@ -342,6 +423,11 @@ public class VoxelBuilderControllerScreen extends Screen {
         return csvs != null && csvs.length > 0;
     }
 
+    private boolean isStlSelected() {
+        if (selectedIndex < 0 || selectedIndex >= modelEntries.size()) return false;
+        return modelEntries.get(selectedIndex).type == ModelType.STL_FILE;
+    }
+
     private void clearParsedData() {
         metadataValid = false;
         voxelCount = 0;
@@ -371,11 +457,15 @@ public class VoxelBuilderControllerScreen extends Screen {
     private void parseSTL(File file) {
         try {
             List<STLAsciiLoader.Triangle> tris = STLLoader.load(file);
+
+            // ADDED: resolution drives normalization + voxelization
+            int res = resolutionPreset.resolution;
+
             ModelNormalizer.NormalizedModel model =
-                    ModelNormalizer.normalize(tris, 64.0f);
+                    ModelNormalizer.normalize(tris, (float) res);
 
             STLVoxelizer.Result result =
-                    STLVoxelizer.voxelizeSurface(model.triangles, 64);
+                    STLVoxelizer.voxelizeSurface(model.triangles, res);
 
             voxelCache.clear();
             for (STLVoxelizer.Voxel v : result.voxels) {
@@ -519,7 +609,31 @@ public class VoxelBuilderControllerScreen extends Screen {
         return (rotation == 90 || rotation == 270) ? sizeX : sizeZ;
     }
 
-    @Override
+    
+    /* =========================
+     * Block selection
+     * ========================= */
+
+    private void cycleBlock() {
+        if (BLOCK_OPTIONS.length == 0) return;
+        blockIndex = (blockIndex + 1) % BLOCK_OPTIONS.length;
+        VoxelBuilderSession.setSelectedBlock(BLOCK_OPTIONS[blockIndex]);
+        updateBlockButtonText();
+    }
+
+    private void updateBlockButtonText() {
+        if (blockButton == null) return;
+        BlockState s = BLOCK_OPTIONS[blockIndex];
+        String name;
+        try {
+            name = s.getBlock().getName().getString();
+        } catch (Exception ignored) {
+            name = "?";
+        }
+        blockButton.setMessage(Component.literal("Block: " + name));
+    }
+
+@Override
     public boolean isPauseScreen() {
         return false;
     }
