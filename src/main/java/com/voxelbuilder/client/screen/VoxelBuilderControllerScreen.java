@@ -155,6 +155,13 @@ private int panelX;
 
     private boolean metadataValid = false;
     private int voxelCount = 0;
+    private int plannedBlockCount = 0; // what will actually be built (after rotation/origin/hollow)
+
+    // Build time / size estimates (UI only)
+    private static final int EST_BLOCKS_PER_TICK = 50; // keep in sync with runner default
+    private static final int WARN_BLOCKS = 50_000;
+    private static final int DANGER_BLOCKS = 200_000;
+
     private int sizeX = 0, sizeY = 0, sizeZ = 0;
 
     /* =========================
@@ -483,7 +490,37 @@ private int panelX;
             return;
         }
 
-        g.drawString(font, "Voxels: " + voxelCount, x, y, 0xFFFFFF); y += 12;
+        g.drawString(font, "Raw voxels: " + voxelCount, x, y, 0xFFFFFF); y += 12;
+        g.drawString(font, "Planned blocks: " + plannedBlockCount + (hollow ? " (Hollow)" : " (Solid)"), x, y, 0xFFFFFF); y += 12;
+
+        // Estimate based on current runner rate (blocks/tick) and 20 TPS
+        if (plannedBlockCount > 0) {
+            double blocksPerSecond = Math.max(1.0, EST_BLOCKS_PER_TICK * 20.0);
+            long etaSeconds = (long) Math.ceil(plannedBlockCount / blocksPerSecond);
+
+            String etaText;
+            if (etaSeconds >= 3600) {
+                long h = etaSeconds / 3600;
+                long m = (etaSeconds % 3600) / 60;
+                etaText = h + "h " + m + "m";
+            } else {
+                long m = etaSeconds / 60;
+                long s = etaSeconds % 60;
+                etaText = m + "m " + s + "s";
+            }
+
+            int color = 0xAAAAAA;
+            if (plannedBlockCount >= DANGER_BLOCKS) color = 0xFF5555;
+            else if (plannedBlockCount >= WARN_BLOCKS) color = 0xFFAA00;
+
+            g.drawString(font, "Est. time: ~" + etaText + " @ " + EST_BLOCKS_PER_TICK + "/tick", x, y, color);
+            y += 12;
+
+            if (plannedBlockCount >= WARN_BLOCKS) {
+                g.drawString(font, "Tip: Hollow / lower detail for faster builds.", x, y, 0x888888);
+                y += 12;
+            }
+        }
         g.drawString(font, "Size: " + getRotatedSizeX() + " x " + sizeY + " x " + getRotatedSizeZ(),
                 x, y, 0xFFFFFF);
     }
@@ -562,6 +599,8 @@ private int panelX;
     private void clearParsedData() {
         metadataValid = false;
         voxelCount = 0;
+        plannedBlockCount = 0;
+
         sizeX = sizeY = sizeZ = 0;
         voxelCache.clear();
         orderedBuildPlan.clear();
@@ -714,6 +753,8 @@ private int panelX;
                     rz - shiftZ
             ));
         }
+
+        plannedBlockCount = blocks.size();
 
         currentBuildPlan = new BuildPlan(blocks, dispX, sizeY, dispZ);
         GhostPreviewDebugRenderer.setPreview(currentBuildPlan);
