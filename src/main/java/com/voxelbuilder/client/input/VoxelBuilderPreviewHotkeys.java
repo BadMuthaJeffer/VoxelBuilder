@@ -358,8 +358,49 @@ public final class VoxelBuilderPreviewHotkeys {
         return Class.forName(SESSION_CLASS);
     }
 
-    private static void startBuildSessionBestEffort() {
-        // We try to populate whatever your runner reads (commonly: isConfirmed + plan/anchor/rot)
+        private static void startBuildSessionBestEffort() {
+        // Authoritative confirm: freeze the exact ghost preview the player sees.
+        try {
+            com.voxelbuilder.client.build.BuildPlan plan = com.voxelbuilder.client.render.GhostPreviewDebugRenderer.getPreview();
+            net.minecraft.core.BlockPos anchor = com.voxelbuilder.client.render.GhostPreviewDebugRenderer.getAnchorPos();
+            if (plan == null || anchor == null) return;
+
+            java.util.List<com.voxelbuilder.client.build.BuildPlan.BlockPos3> frozen =
+                    com.voxelbuilder.client.render.GhostPreviewDebugRenderer.snapshotConfirmedBlocks();
+            if (frozen == null || frozen.isEmpty()) return;
+
+            int rx = Math.round(com.voxelbuilder.client.render.GhostPreviewDebugRenderer.getPreviewRotationX());
+            int ry = Math.round(com.voxelbuilder.client.render.GhostPreviewDebugRenderer.getPreviewRotationY());
+            int rz = Math.round(com.voxelbuilder.client.render.GhostPreviewDebugRenderer.getPreviewRotationZ());
+
+
+            // Capture selected block from the controller screen at confirm time (if available).
+            try {
+                net.minecraft.client.gui.screens.Screen scr = net.minecraft.client.Minecraft.getInstance().screen;
+                if (scr instanceof com.voxelbuilder.client.screen.VoxelBuilderControllerScreen vbs) {
+                    net.minecraft.resources.ResourceLocation id = vbs.getSelectedBlockId();
+                    if (id != null) {
+                        net.minecraft.world.level.block.Block b = net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(id);
+                        if (b != null && b != net.minecraft.world.level.block.Blocks.AIR) {
+                            com.voxelbuilder.client.build.VoxelBuilderSession.setSelectedBlock(b.defaultBlockState());
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+                // ignore; selection is optional
+            }
+
+            // Freeze into the session (build must use confirmed blocks, not live rotation).
+            com.voxelbuilder.client.build.VoxelBuilderSession.confirmFrozen(frozen, anchor, rx, ry, rz);
+
+            // Lock preview edits while confirmed/running
+            com.voxelbuilder.client.render.GhostPreviewDebugRenderer.setPreviewLocked(true);
+            return;
+        } catch (Throwable ignored) {
+            // Fall through to legacy reflection-based confirm if needed.
+        }
+
+        // Legacy behavior: populate whatever your runner reads (commonly: isConfirmed + plan/anchor/rot)
         try {
             Class<?> r = rendererClass();
             Class<?> s = sessionClass();
@@ -382,12 +423,17 @@ public final class VoxelBuilderPreviewHotkeys {
 
             if (plan == null || anchor == null) return;
 
+            // Use our local rx/ry/rz as a fallback
+            int rx = VoxelBuilderPreviewHotkeys.rx;
+            int ry = VoxelBuilderPreviewHotkeys.ry;
+            int rz = VoxelBuilderPreviewHotkeys.rz;
+
             // Try confirm(plan, anchor, rx, ry, rz)
             if (tryInvokeStatic(s, "confirm",
                     new Class<?>[]{plan.getClass(), anchor.getClass(), int.class, int.class, int.class},
                     new Object[]{plan, anchor, rx, ry, rz})) return;
 
-            // Try confirm(anchor, plan, rx, ry, rz)
+            // Try confirm(anchor, plan, rx, ry, rz) (older ordering)
             if (tryInvokeStatic(s, "confirm",
                     new Class<?>[]{anchor.getClass(), plan.getClass(), int.class, int.class, int.class},
                     new Object[]{anchor, plan, rx, ry, rz})) return;
@@ -413,7 +459,8 @@ public final class VoxelBuilderPreviewHotkeys {
         }
     }
 
-    private static void clearBuildSessionBestEffort() {
+
+private static void clearBuildSessionBestEffort() {
         try {
             Class<?> s = sessionClass();
             // common: clear()

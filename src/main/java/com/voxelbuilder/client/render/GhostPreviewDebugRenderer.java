@@ -15,6 +15,7 @@ import net.minecraft.world.phys.Vec3;
 import com.mojang.math.Axis;
 
 import java.util.List;
+import java.util.ArrayList;
 
 /**
  * Ghost preview renderer (debug line boxes).
@@ -95,6 +96,86 @@ public final class GhostPreviewDebugRenderer {
     public static float getPreviewRotationX() { return rotX; }
     public static float getPreviewRotationY() { return rotY; }
     public static float getPreviewRotationZ() { return rotZ; }
+
+    /**
+     * Snapshot the EXACT blocks the ghost is currently rendering, with the current
+     * render-only rotation (and scale) baked into the returned coordinates.
+     *
+     * This is the authoritative source for building after Confirm.
+     */
+    public static List<BuildPlan.BlockPos3> snapshotConfirmedBlocks() {
+        BuildPlan plan = previewPlan;
+        if (plan == null) return List.of();
+        List<BuildPlan.BlockPos3> src = plan.getBlocks();
+        if (src == null || src.isEmpty()) return List.of();
+
+        // Bake the same transform used in render(): scale about pivot, then rotate about pivot.
+        final double s = previewScale;
+        final double px = pivotX, py = pivotY, pz = pivotZ;
+
+        // Snap rotation to nearest 90° to match hotkeys usage and avoid rounding drift.
+        final int ax = snapRightAngle(rotX);
+        final int ay = snapRightAngle(rotY);
+        final int az = snapRightAngle(rotZ);
+
+        ArrayList<BuildPlan.BlockPos3> out = new ArrayList<>(src.size());
+        for (BuildPlan.BlockPos3 p : src) {
+            double x = (p.x - minX);
+            double y = (p.y - minY);
+            double z = (p.z - minZ);
+
+            // scale about pivot
+            x = px + (x - px) * s;
+            y = py + (y - py) * s;
+            z = pz + (z - pz) * s;
+
+            // translate to pivot
+            double dx = x - px;
+            double dy = y - py;
+            double dz = z - pz;
+
+            // rotate X
+            if (ax != 0) {
+                double[] yz = rot2(dy, dz, ax);
+                dy = yz[0]; dz = yz[1];
+            }
+            // rotate Y
+            if (ay != 0) {
+                double[] xz = rot2(dx, dz, ay);
+                dx = xz[0]; dz = xz[1];
+            }
+            // rotate Z
+            if (az != 0) {
+                double[] xy = rot2(dx, dy, az);
+                dx = xy[0]; dy = xy[1];
+            }
+
+            // translate back
+            x = px + dx;
+            y = py + dy;
+            z = pz + dz;
+
+            out.add(new BuildPlan.BlockPos3((int)Math.round(x), (int)Math.round(y), (int)Math.round(z)));
+        }
+        return out;
+    }
+
+    private static int snapRightAngle(float degrees) {
+        int d = Math.round(degrees / 90f) * 90;
+        d %= 360;
+        if (d < 0) d += 360;
+        return d;
+    }
+
+    /** Rotate a 2D vector (a,b) by angle degrees (must be 0/90/180/270). */
+    private static double[] rot2(double a, double b, int angleDeg) {
+        switch (angleDeg) {
+            case 90:  return new double[]{-b, a};
+            case 180: return new double[]{-a, -b};
+            case 270: return new double[]{b, -a};
+            default:  return new double[]{a, b};
+        }
+    }
 
     public static void resetPreviewRotation() {
         rotX = 0f;
@@ -276,18 +357,11 @@ public final class GhostPreviewDebugRenderer {
         boundsValid = true;
     }
 
-    // =========================================================
-    // Compatibility wrappers (additive-only)
-    // Older UI code referenced these method names.
-    // =========================================================
-
-    /** Locks the current preview in place (does not change or clear preview data). */
+    // Compatibility wrappers (older screen code may call these)
     public static void lockAnchor() {
-        // In current renderer, "previewLocked" is the safe lock mechanism.
         setPreviewLocked(true);
     }
 
-    /** Cancels placement/anchor mode without clearing preview data. */
     public static void disarmPlacement() {
         clearPlacement();
     }

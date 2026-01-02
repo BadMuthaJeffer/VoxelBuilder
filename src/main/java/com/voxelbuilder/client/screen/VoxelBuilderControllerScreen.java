@@ -7,13 +7,21 @@ import com.voxelbuilder.client.voxel.STLAsciiLoader;
 import com.voxelbuilder.client.voxel.STLLoader;
 import com.voxelbuilder.client.voxel.STLVoxelizer;
 
+import com.voxelbuilder.client.build.VoxelBuilderSession;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
+
+import net.minecraft.core.Holder;
+import net.minecraft.core.HolderSet;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -37,6 +45,17 @@ public class VoxelBuilderControllerScreen extends Screen {
     private enum Tab { MODELS, PREVIEW, BLOCKS, SETTINGS }
     private enum OriginMode { CORNER, CENTER }
     private enum ModelType { STL_FILE, CSV_FILE, CSV_FOLDER }
+
+    private enum BlockCategory {
+        ALL("All"),
+        PLANKS("Planks"),
+        LOGS("Logs"),
+        CONCRETE("Concrete"),
+        STONE("Stone");
+
+        final String label;
+        BlockCategory(String label) { this.label = label; }
+    }
 
     private static final class ModelEntry {
         final ModelType type;
@@ -104,11 +123,18 @@ private int panelX;
 
     // Blocks tab
     private EditBox blockSearchBox;
+    private Button blockCatAll;
+    private Button blockCatPlanks;
+    private Button blockCatLogs;
+    private Button blockCatConcrete;
+    private Button blockCatStone;
     private Button blockPrevPageButton;
     private Button blockNextPageButton;
     private Button selectedBlockButton;
     private final Button[] blockEntryButtons = new Button[6];
     private final List<ResourceLocation> allBlockIds = new ArrayList<>();
+    private final EnumMap<BlockCategory, List<ResourceLocation>> categoryCache = new EnumMap<>(BlockCategory.class);
+    private BlockCategory selectedCategory = BlockCategory.ALL;
     private final List<ResourceLocation> filteredBlockIds = new ArrayList<>();
     private int blockPage = 0;
     private ResourceLocation selectedBlockId = null;
@@ -257,7 +283,48 @@ private int panelX;
 
         // === Blocks tab widgets ===
         int bx = panelX + 10;
-        int by = panelY + 32;
+        int catY = panelY + 32;
+        int catH = 16;
+        int catW = 50;
+        int catGap = 4;
+
+        blockCatAll = addRenderableWidget(
+                Button.builder(Component.literal("All"), b -> {
+                    selectedCategory = BlockCategory.ALL;
+                    blockPage = 0;
+                    refreshBlockFilter();
+                }).bounds(bx, catY, catW, catH).build()
+        );
+        blockCatPlanks = addRenderableWidget(
+                Button.builder(Component.literal("Planks"), b -> {
+                    selectedCategory = BlockCategory.PLANKS;
+                    blockPage = 0;
+                    refreshBlockFilter();
+                }).bounds(bx + (catW + catGap) * 1, catY, catW, catH).build()
+        );
+        blockCatLogs = addRenderableWidget(
+                Button.builder(Component.literal("Logs"), b -> {
+                    selectedCategory = BlockCategory.LOGS;
+                    blockPage = 0;
+                    refreshBlockFilter();
+                }).bounds(bx + (catW + catGap) * 2, catY, catW, catH).build()
+        );
+        blockCatConcrete = addRenderableWidget(
+                Button.builder(Component.literal("Conc"), b -> {
+                    selectedCategory = BlockCategory.CONCRETE;
+                    blockPage = 0;
+                    refreshBlockFilter();
+                }).bounds(bx + (catW + catGap) * 3, catY, catW, catH).build()
+        );
+        blockCatStone = addRenderableWidget(
+                Button.builder(Component.literal("Stone"), b -> {
+                    selectedCategory = BlockCategory.STONE;
+                    blockPage = 0;
+                    refreshBlockFilter();
+                }).bounds(bx + (catW + catGap) * 4, catY, catW, catH).build()
+        );
+
+        int by = catY + catH + 4;
 
         blockSearchBox = new EditBox(font, bx, by, PANEL_WIDTH - 20, 16, Component.literal("Search"));
         blockSearchBox.setValue("");
@@ -267,7 +334,7 @@ private int panelX;
         });
         addRenderableWidget(blockSearchBox);
 
-        int listY = by + 22;
+        int listY = by + 20;
         int rowH = 16;
         int rowGap = 2;
         for (int i = 0; i < blockEntryButtons.length; i++) {
@@ -280,6 +347,15 @@ private int panelX;
                         selectedBlockId = filteredBlockIds.get(idx);
                         selectedBlockLabel = selectedBlockId.toString();
                         selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+
+                        // Immediately apply to the session so builds work even if the screen is closed.
+                        try {
+                            Block b = BuiltInRegistries.BLOCK.get(selectedBlockId);
+                            if (b != null && b != Blocks.AIR) {
+                                VoxelBuilderSession.setSelectedBlock(b.defaultBlockState());
+                            }
+                        } catch (Throwable ignored) {}
+
                     }).bounds(bx, ry, PANEL_WIDTH - 20, rowH).build()
             );
         }
@@ -307,6 +383,10 @@ private int panelX;
                     selectedBlockId = null;
                     selectedBlockLabel = "Default";
                     selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+
+                    // Reset session selection to default (stone)
+                    try { VoxelBuilderSession.setSelectedBlock(Blocks.STONE.defaultBlockState()); } catch (Throwable ignored) {}
+
                 }).bounds(bx + 50, pagerY, PANEL_WIDTH - 20 - 50, 16).build()
         );
 
@@ -328,12 +408,27 @@ private int panelX;
         refreshButton.visible = activeTab == Tab.MODELS;
 
         boolean blocksActive = activeTab == Tab.BLOCKS;
+        if (!blocksActive && blockSearchBox != null && blockSearchBox.isFocused()) {
+            // Prevent hidden search box from eating hotkeys when user leaves the Blocks tab
+            blockSearchBox.setFocused(false);
+            setFocused(null);
+        }
+
+        if (blockCatAll != null) blockCatAll.visible = blocksActive;
+        if (blockCatPlanks != null) blockCatPlanks.visible = blocksActive;
+        if (blockCatLogs != null) blockCatLogs.visible = blocksActive;
+        if (blockCatConcrete != null) blockCatConcrete.visible = blocksActive;
+        if (blockCatStone != null) blockCatStone.visible = blocksActive;
         if (blockSearchBox != null) blockSearchBox.visible = blocksActive;
         if (blockPrevPageButton != null) blockPrevPageButton.visible = blocksActive;
         if (blockNextPageButton != null) blockNextPageButton.visible = blocksActive;
         if (selectedBlockButton != null) selectedBlockButton.visible = blocksActive;
         for (Button b0 : blockEntryButtons) {
             if (b0 != null) b0.visible = blocksActive;
+        }
+
+        if (blocksActive) {
+            updateBlockCategoryButtonLabels();
         }
 
         if (resolutionButton != null) {
@@ -665,6 +760,55 @@ private int panelX;
         allBlockIds.sort((a, b) -> a.toString().compareToIgnoreCase(b.toString()));
     }
 
+    private void updateBlockCategoryButtonLabels() {
+        if (blockCatAll != null) blockCatAll.setMessage(Component.literal(selectedCategory == BlockCategory.ALL ? "[All]" : "All"));
+        if (blockCatPlanks != null) blockCatPlanks.setMessage(Component.literal(selectedCategory == BlockCategory.PLANKS ? "[Planks]" : "Planks"));
+        if (blockCatLogs != null) blockCatLogs.setMessage(Component.literal(selectedCategory == BlockCategory.LOGS ? "[Logs]" : "Logs"));
+        if (blockCatConcrete != null) blockCatConcrete.setMessage(Component.literal(selectedCategory == BlockCategory.CONCRETE ? "[Conc]" : "Conc"));
+        if (blockCatStone != null) blockCatStone.setMessage(Component.literal(selectedCategory == BlockCategory.STONE ? "[Stone]" : "Stone"));
+    }
+
+    private List<ResourceLocation> getBlockIdsForSelectedCategory() {
+        if (selectedCategory == BlockCategory.ALL) {
+            loadAllBlocksIfNeeded();
+            return allBlockIds;
+        }
+
+        List<ResourceLocation> cached = categoryCache.get(selectedCategory);
+        if (cached != null) {
+            return cached;
+        }
+
+        // Tag-based categories (includes modded blocks if they add themselves to these tags)
+        final Set<ResourceLocation> out = new HashSet<>();
+        if (selectedCategory == BlockCategory.PLANKS) {
+            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "planks")), out);
+        } else if (selectedCategory == BlockCategory.LOGS) {
+            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "logs")), out);
+        } else if (selectedCategory == BlockCategory.CONCRETE) {
+            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "concrete")), out);
+        } else if (selectedCategory == BlockCategory.STONE) {
+            // "Stone-ish" union: covers vanilla + most modded stones that follow tagging conventions
+            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "base_stone_overworld")), out);
+            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "base_stone_nether")), out);
+            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "stone_ore_replaceables")), out);
+        }
+
+        List<ResourceLocation> list = new ArrayList<>(out);
+        list.sort((a, b) -> a.toString().compareToIgnoreCase(b.toString()));
+        categoryCache.put(selectedCategory, list);
+        return list;
+    }
+
+    private void collectTagIds(TagKey<Block> tag, Set<ResourceLocation> out) {
+        Optional<HolderSet.Named<Block>> opt = BuiltInRegistries.BLOCK.getTag(tag);
+        if (opt.isEmpty()) return;
+        HolderSet.Named<Block> named = opt.get();
+        for (Holder<Block> h : named) {
+            h.unwrapKey().ifPresent(key -> out.add(key.location()));
+        }
+    }
+
     
     // Compatibility wrapper: older UI calls these names
     private void refreshBlockFilter() {
@@ -678,8 +822,9 @@ private int panelX;
     }
 
 private void applyBlockFilter() {
-        loadAllBlocksIfNeeded();
         filteredBlockIds.clear();
+
+        List<ResourceLocation> source = getBlockIdsForSelectedCategory();
 
         String q = "";
         if (blockSearchBox != null) {
@@ -688,9 +833,9 @@ private void applyBlockFilter() {
         q = q == null ? "" : q.trim().toLowerCase(java.util.Locale.ROOT);
 
         if (q.isEmpty()) {
-            filteredBlockIds.addAll(allBlockIds);
+            filteredBlockIds.addAll(source);
         } else {
-            for (ResourceLocation id : allBlockIds) {
+            for (ResourceLocation id : source) {
                 if (id.toString().toLowerCase(java.util.Locale.ROOT).contains(q)) {
                     filteredBlockIds.add(id);
                 }
@@ -774,10 +919,20 @@ private void applyBlockFilter() {
 
         // Small hint row
         int hintY = panelY + 26;
-        g.drawString(font, "Search + click a block. This is just selection for now.", x, hintY, 0xAAAAAA);
+        g.drawString(font, "Search + click a block. This controls what block gets built.", x, hintY, 0xAAAAAA);
 
         int infoY = panelY + PANEL_HEIGHT - 56;
         g.drawString(font, "Matches: " + filteredBlockIds.size(), x, infoY, 0xAAAAAA);
     }
 
+
+
+    // ===== Block selection (for hotkeys/build confirmation) =====
+    public ResourceLocation getSelectedBlockId() {
+        return selectedBlockId;
+    }
+
+    public String getSelectedBlockLabel() {
+        return selectedBlockLabel;
+    }
 }
