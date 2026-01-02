@@ -275,4 +275,21 @@ public final class GhostPreviewDebugRenderer {
 
         boundsValid = true;
     }
+
+    // =========================================================
+    // Compatibility wrappers (additive-only)
+    // Older UI code referenced these method names.
+    // =========================================================
+
+    /** Locks the current preview in place (does not change or clear preview data). */
+    public static void lockAnchor() {
+        // In current renderer, "previewLocked" is the safe lock mechanism.
+        setPreviewLocked(true);
+    }
+
+    /** Cancels placement/anchor mode without clearing preview data. */
+    public static void disarmPlacement() {
+        clearPlacement();
+    }
+
 }
