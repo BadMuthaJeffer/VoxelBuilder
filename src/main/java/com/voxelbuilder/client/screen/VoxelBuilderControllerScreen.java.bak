@@ -1,7 +1,6 @@
 package com.voxelbuilder.client.screen;
 
 import com.voxelbuilder.client.build.BuildPlan;
-import com.voxelbuilder.client.build.VoxelBuilderSession;
 import com.voxelbuilder.client.model.ModelNormalizer;
 import com.voxelbuilder.client.render.GhostPreviewDebugRenderer;
 import com.voxelbuilder.client.voxel.STLAsciiLoader;
@@ -10,10 +9,11 @@ import com.voxelbuilder.client.voxel.STLVoxelizer;
 
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -34,33 +34,9 @@ public class VoxelBuilderControllerScreen extends Screen {
      * Enums
      * ========================= */
 
-    private enum Tab { MODELS, PREVIEW, BUILD, SETTINGS }
+    private enum Tab { MODELS, PREVIEW, BLOCKS, SETTINGS }
     private enum OriginMode { CORNER, CENTER }
     private enum ModelType { STL_FILE, CSV_FILE, CSV_FOLDER }
-
-    // === ADDED: Resolution presets (STL only) ===
-    private enum ResolutionPreset {
-        VERY_HIGH("Max/1:1", 256),
-        HIGH("High", 128),
-        MEDIUM("Med", 64),
-        LOW("Low", 32);
-
-        final String label;
-        final int resolution;
-
-        ResolutionPreset(String label, int resolution) {
-            this.label = label;
-            this.resolution = resolution;
-        }
-
-        ResolutionPreset next() {
-            // Cycle: LOW -> MEDIUM -> HIGH -> VERY_HIGH -> LOW
-            if (this == LOW) return MEDIUM;
-            if (this == MEDIUM) return HIGH;
-            if (this == HIGH) return VERY_HIGH;
-            return LOW;
-        }
-    }
 
     private static final class ModelEntry {
         final ModelType type;
@@ -94,14 +70,24 @@ public class VoxelBuilderControllerScreen extends Screen {
      * ========================= */
 
     private Button refreshButton;
-    private Button resolutionButton; // ADDED
-    private Button blockButton; // ADDED
-    private Button rotateButton;
     private Button originButton;
     private Button hollowButton;
     private Button placeBuildButton;
     private Button confirmButton;
     private Button cancelButton;
+
+    // Blocks tab
+    private EditBox blockSearchBox;
+    private Button blockPrevPageButton;
+    private Button blockNextPageButton;
+    private Button selectedBlockButton;
+    private final Button[] blockEntryButtons = new Button[10];
+    private final List<ResourceLocation> allBlockIds = new ArrayList<>();
+    private final List<ResourceLocation> filteredBlockIds = new ArrayList<>();
+    private int blockPage = 0;
+    private ResourceLocation selectedBlockId = null;
+    private String selectedBlockLabel = "Default";
+
 
     /* =========================
      * Transform
@@ -110,27 +96,6 @@ public class VoxelBuilderControllerScreen extends Screen {
     private int rotation = 0;
     private OriginMode originMode = OriginMode.CORNER;
     private boolean hollow = false;
-
-    
-    /* =========================
-     * Block selection (simple)
-     * ========================= */
-
-    private String selectedBlockLabel = "Default";
-// ADDED
-    private ResolutionPreset resolutionPreset = ResolutionPreset.MEDIUM;
-
-    /* =========================
-     * Block selection (single-block)
-     * ========================= */
-
-    private static final BlockState[] BLOCK_OPTIONS = new BlockState[] {
-            Blocks.STONE.defaultBlockState(),
-            Blocks.COBBLESTONE.defaultBlockState(),
-            Blocks.STONE_BRICKS.defaultBlockState(),
-            Blocks.GLASS.defaultBlockState()
-    };
-    private int blockIndex = 0;
 
     /* =========================
      * Metadata
@@ -161,7 +126,7 @@ public class VoxelBuilderControllerScreen extends Screen {
      * Init
      * ========================= */
 
-    @Override
+        
     protected void init() {
         panelX = (width - PANEL_WIDTH) / 2;
         panelY = (height - PANEL_HEIGHT) / 2;
@@ -170,84 +135,145 @@ public class VoxelBuilderControllerScreen extends Screen {
         int tabW = 60;
         int tabH = 20;
         int gap = 5;
-
         int startX = panelX + (PANEL_WIDTH - (tabW * 4 + gap * 3)) / 2;
 
-        addRenderableWidget(Button.builder(Component.literal("Models"), btn -> activeTab = Tab.MODELS)
+        addRenderableWidget(Button.builder(Component.literal("Models"), b -> activeTab = Tab.MODELS)
                 .bounds(startX, tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Preview"), btn -> activeTab = Tab.PREVIEW)
+        addRenderableWidget(Button.builder(Component.literal("Preview"), b -> activeTab = Tab.PREVIEW)
                 .bounds(startX + (tabW + gap), tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Build"), btn -> activeTab = Tab.BUILD)
-                .bounds(startX + 2 * (tabW + gap), tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Settings"), btn -> activeTab = Tab.SETTINGS)
-                .bounds(startX + 3 * (tabW + gap), tabY, tabW, tabH).build());
+        addRenderableWidget(Button.builder(Component.literal("Blocks"), b -> activeTab = Tab.BLOCKS)
+                .bounds(startX + (tabW + gap) * 2, tabY, tabW, tabH).build());
+        addRenderableWidget(Button.builder(Component.literal("Settings"), b -> activeTab = Tab.SETTINGS)
+                .bounds(startX + (tabW + gap) * 3, tabY, tabW, tabH).build());
 
         refreshButton = addRenderableWidget(
-                Button.builder(Component.literal("Refresh"), btn -> loadModels())
+                Button.builder(Component.literal("Refresh"), b -> loadModels())
                         .bounds(panelX + PANEL_WIDTH - 68, panelY + 6, 60, 16)
                         .build()
         );
 
-        // === ADDED: Resolution picker (STL only, in Preview tab) ===
-        resolutionButton = addRenderableWidget(
-                Button.builder(Component.literal("Res"), btn -> {
-                    resolutionPreset = resolutionPreset.next();
+        int btnY = panelY + PANEL_HEIGHT - 22;
+        int btnH = 16;
+        int btnX = panelX + 10;
+        int w60 = 60;
 
-        blockButton = addRenderableWidget(
-                Button.builder(Component.literal("Block"), btn -> {
-                    // Simple placeholder: cycles label only. Real block palette wiring is in TODO.
-                    if ("Default".equals(selectedBlockLabel)) selectedBlockLabel = "Hotbar";
-                    else if ("Hotbar".equals(selectedBlockLabel)) selectedBlockLabel = "Default";
-                }).bounds(panelX + PANEL_WIDTH - 68, btnY, 60, btnH).build()
+        // Preview controls (rotation is hotkey-only now)
+        originButton = addRenderableWidget(
+                Button.builder(Component.literal(originMode == OriginMode.CORNER ? "Corner" : "Center"), b -> {
+                    originMode = (originMode == OriginMode.CORNER) ? OriginMode.CENTER : OriginMode.CORNER;
+                    rebuildPreview();
+                }).bounds(btnX, btnY, w60, btnH).build()
         );
 
-placeBuildButton = addRenderableWidget(
-                Button.builder(Component.literal("Place Build"), btn -> {
+        hollowButton = addRenderableWidget(
+                Button.builder(Component.literal(hollow ? "Hollow" : "Solid"), b -> {
+                    hollow = !hollow;
+                    rebuildPreview();
+                }).bounds(btnX + w60 + 6, btnY, w60, btnH).build()
+        );
+
+        placeBuildButton = addRenderableWidget(
+                Button.builder(Component.literal("Place Build"), b -> {
                     GhostPreviewDebugRenderer.armPlacement();
                     minecraft.setScreen(null);
-                }).bounds(panelX + PANEL_WIDTH - 156, btnY, 80, btnH).build()
+                }).bounds(btnX + (w60 + 6) * 2, btnY, 86, btnH).build()
         );
 
+        int confirmY = panelY + PANEL_HEIGHT - 40;
         confirmButton = addRenderableWidget(
-                Button.builder(Component.literal("Confirm"), btn -> minecraft.setScreen(null))
-                        .bounds(btnX, btnY - 20, 60, 16).build()
+                Button.builder(Component.literal("Confirm"), b -> {
+                    GhostPreviewDebugRenderer.lockAnchor();
+                }).bounds(panelX + 10, confirmY, 60, btnH).build()
         );
 
         cancelButton = addRenderableWidget(
-                Button.builder(Component.literal("Cancel"), btn -> minecraft.setScreen(this))
-                        .bounds(btnX + 66, btnY - 20, 60, 16).build()
+                Button.builder(Component.literal("Cancel"), b -> {
+                    GhostPreviewDebugRenderer.disarmPlacement();
+                    minecraft.setScreen(this);
+                }).bounds(panelX + 74, confirmY, 60, btnH).build()
         );
 
+        // === Blocks tab widgets ===
+        int bx = panelX + 10;
+        int by = panelY + 32;
+
+        blockSearchBox = new EditBox(font, bx, by, PANEL_WIDTH - 20, 16, Component.literal("Search"));
+        blockSearchBox.setValue("");
+        blockSearchBox.setResponder(s -> {
+            blockPage = 0;
+            refreshBlockFilter();
+        });
+        addRenderableWidget(blockSearchBox);
+
+        int listY = by + 22;
+        int rowH = 16;
+        int rowGap = 2;
+        for (int i = 0; i < blockEntryButtons.length; i++) {
+            final int slot = i;
+            int ry = listY + i * (rowH + rowGap);
+            blockEntryButtons[i] = addRenderableWidget(
+                    Button.builder(Component.literal(""), btn0 -> {
+                        int idx = blockPage * blockEntryButtons.length + slot;
+                        if (idx < 0 || idx >= filteredBlockIds.size()) return;
+                        selectedBlockId = filteredBlockIds.get(idx);
+                        selectedBlockLabel = selectedBlockId.toString();
+                        selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+                    }).bounds(bx, ry, PANEL_WIDTH - 20, rowH).build()
+            );
+        }
+
+        int pagerY = panelY + PANEL_HEIGHT - 40;
+        blockPrevPageButton = addRenderableWidget(
+                Button.builder(Component.literal("<"), btn0 -> {
+                    if (blockPage > 0) {
+                        blockPage--;
+                        updateBlockButtons();
+                    }
+                }).bounds(bx, pagerY, 20, 16).build()
+        );
+        blockNextPageButton = addRenderableWidget(
+                Button.builder(Component.literal(">"), btn0 -> {
+                    int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / blockEntryButtons.length);
+                    if (blockPage < maxPage) {
+                        blockPage++;
+                        updateBlockButtons();
+                    }
+                }).bounds(bx + 24, pagerY, 20, 16).build()
+        );
+        selectedBlockButton = addRenderableWidget(
+                Button.builder(Component.literal("Block: " + selectedBlockLabel), btn0 -> {
+                    selectedBlockId = null;
+                    selectedBlockLabel = "Default";
+                    selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+                }).bounds(bx + 50, pagerY, PANEL_WIDTH - 20 - 50, 16).build()
+        );
+
+        refreshBlockFilter();
         loadModels();
     }
 
     /* =========================
      * Blur fix
      * ========================= */
-
-    @Override
     public void renderBackground(GuiGraphics g, int mouseX, int mouseY, float partialTick) {}
-
     /* =========================
      * Rendering
      * ========================= */
-
-    @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
 
         boolean previewActive = activeTab == Tab.PREVIEW && metadataValid;
 
         refreshButton.visible = activeTab == Tab.MODELS;
-        // Block selector: only relevant when preview is active
-        if (blockButton != null) {
-            blockButton.visible = previewActive;
-            if (blockButton.visible) updateBlockButtonText();
-        }
-// ADDED: only show when preview is active + STL selected
-        resolutionButton.visible = previewActive && isStlSelected();
-        resolutionButton.setMessage(Component.literal("Res " + resolutionPreset.label));
 
-        rotateButton.visible = previewActive;
+        boolean blocksActive = activeTab == Tab.BLOCKS;
+        if (blockSearchBox != null) blockSearchBox.visible = blocksActive;
+        if (blockPrevPageButton != null) blockPrevPageButton.visible = blocksActive;
+        if (blockNextPageButton != null) blockNextPageButton.visible = blocksActive;
+        if (selectedBlockButton != null) selectedBlockButton.visible = blocksActive;
+        for (Button b0 : blockEntryButtons) {
+            if (b0 != null) b0.visible = blocksActive;
+        }
+
         originButton.visible = previewActive;
         hollowButton.visible = previewActive;
         placeBuildButton.visible = previewActive;
@@ -255,10 +281,8 @@ placeBuildButton = addRenderableWidget(
         confirmButton.visible = previewActive;
         cancelButton.visible = previewActive;
 
-        rotateButton.setMessage(Component.literal("Rot " + rotation));
         originButton.setMessage(Component.literal(originMode == OriginMode.CORNER ? "Corner" : "Center"));
         hollowButton.setMessage(Component.literal(hollow ? "Hollow" : "Solid"));
-        if (blockButton != null) blockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
 
         g.fill(panelX, panelY, panelX + PANEL_WIDTH, panelY + PANEL_HEIGHT, 0xFF2B2B2B);
         g.drawString(font, title, panelX + 8, panelY + 8, 0xFFFFFF);
@@ -266,7 +290,7 @@ placeBuildButton = addRenderableWidget(
 
         if (activeTab == Tab.MODELS) renderModelsTab(g);
         else if (activeTab == Tab.PREVIEW) renderPreviewTab(g);
-        else if (activeTab == Tab.BUILD) renderBuildTab(g);
+        else if (activeTab == Tab.BLOCKS) renderBlocksTab(g);
 
         super.render(g, mouseX, mouseY, partialTick);
     }
@@ -298,36 +322,14 @@ placeBuildButton = addRenderableWidget(
         }
 
         g.drawString(font, "Voxels: " + voxelCount, x, y, 0xFFFFFF); y += 12;
-
-        // ADDED: show resolution info for STL
-        if (isStlSelected()) {
-            g.drawString(font, "Res: " + resolutionPreset.label + " (" + resolutionPreset.resolution + ")", x, y, 0xAAAAAA);
-            y += 12;
-        }
-
         g.drawString(font, "Size: " + getRotatedSizeX() + " x " + sizeY + " x " + getRotatedSizeZ(),
                 x, y, 0xFFFFFF);
     }
 
-    private void renderBuildTab(GuiGraphics g) {
-        int x = panelX + 10;
-        int y = panelY + 32;
-
-        if (currentBuildPlan == null) {
-            g.drawString(font, "No build data.", x, y, 0xAAAAAA);
-            return;
-        }
-
-        g.drawString(font, "Build-ready: YES", x, y, 0x55FF55);
-        y += 12;
-        g.drawString(font, "Blocks: " + currentBuildPlan.getBlockCount(), x, y, 0xFFFFFF);
-    }
 
     /* =========================
      * Input
      * ========================= */
-
-    @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (activeTab == Tab.MODELS && button == 0) {
             int x = panelX + 10;
@@ -395,11 +397,6 @@ placeBuildButton = addRenderableWidget(
         return csvs != null && csvs.length > 0;
     }
 
-    private boolean isStlSelected() {
-        if (selectedIndex < 0 || selectedIndex >= modelEntries.size()) return false;
-        return modelEntries.get(selectedIndex).type == ModelType.STL_FILE;
-    }
-
     private void clearParsedData() {
         metadataValid = false;
         voxelCount = 0;
@@ -429,15 +426,11 @@ placeBuildButton = addRenderableWidget(
     private void parseSTL(File file) {
         try {
             List<STLAsciiLoader.Triangle> tris = STLLoader.load(file);
-
-            // ADDED: resolution drives normalization + voxelization
-            int res = resolutionPreset.resolution;
-
             ModelNormalizer.NormalizedModel model =
-                    ModelNormalizer.normalize(tris, (float) res);
+                    ModelNormalizer.normalize(tris, 64.0f);
 
             STLVoxelizer.Result result =
-                    STLVoxelizer.voxelizeSurface(model.triangles, res);
+                    STLVoxelizer.voxelizeSurface(model.triangles, 64);
 
             voxelCache.clear();
             for (STLVoxelizer.Voxel v : result.voxels) {
@@ -581,32 +574,125 @@ placeBuildButton = addRenderableWidget(
         return (rotation == 90 || rotation == 270) ? sizeX : sizeZ;
     }
 
-    
-    /* =========================
-     * Block selection
-     * ========================= */
-
-    private void cycleBlock() {
-        if (BLOCK_OPTIONS.length == 0) return;
-        blockIndex = (blockIndex + 1) % BLOCK_OPTIONS.length;
-        VoxelBuilderSession.setSelectedBlock(BLOCK_OPTIONS[blockIndex]);
-        updateBlockButtonText();
-    }
-
-    private void updateBlockButtonText() {
-        if (blockButton == null) return;
-        BlockState s = BLOCK_OPTIONS[blockIndex];
-        String name;
-        try {
-            name = s.getBlock().getName().getString();
-        } catch (Exception ignored) {
-            name = "?";
-        }
-        blockButton.setMessage(Component.literal("Block: " + name));
-    }
-
-@Override
-    public boolean isPauseScreen() {
+        public boolean isPauseScreen() {
         return false;
     }
+
+
+    /* =========================
+     * Blocks tab helpers
+     * ========================= */
+
+    private void loadAllBlocksIfNeeded() {
+        if (!allBlockIds.isEmpty()) return;
+        // BuiltInRegistries.BLOCK.keySet() gives all registered block IDs.
+        for (ResourceLocation id : BuiltInRegistries.BLOCK.keySet()) {
+            allBlockIds.add(id);
+        }
+        allBlockIds.sort((a, b) -> a.toString().compareToIgnoreCase(b.toString()));
+    }
+
+    private void applyBlockFilter() {
+        loadAllBlocksIfNeeded();
+        filteredBlockIds.clear();
+
+        String q = "";
+        if (blockSearchBox != null) {
+            q = blockSearchBox.getValue();
+        }
+        q = q == null ? "" : q.trim().toLowerCase(java.util.Locale.ROOT);
+
+        if (q.isEmpty()) {
+            filteredBlockIds.addAll(allBlockIds);
+        } else {
+            for (ResourceLocation id : allBlockIds) {
+                if (id.toString().toLowerCase(java.util.Locale.ROOT).contains(q)) {
+                    filteredBlockIds.add(id);
+                }
+            }
+        }
+
+        // Clamp page
+        int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / blockEntryButtons.length);
+        if (blockPage > maxPage) blockPage = maxPage;
+        if (blockPage < 0) blockPage = 0;
+    }
+
+    private void updateBlockEntryButtons() {
+        if (blockSearchBox == null) return;
+        applyBlockFilter();
+
+        int start = blockPage * blockEntryButtons.length;
+        for (int i = 0; i < blockEntryButtons.length; i++) {
+            Button b = blockEntryButtons[i];
+            if (b == null) continue;
+
+            int idx = start + i;
+            if (idx >= 0 && idx < filteredBlockIds.size()) {
+                ResourceLocation id = filteredBlockIds.get(idx);
+                String label = id.toString();
+                if (label.length() > 42) {
+                    label = label.substring(0, 39) + "...";
+                }
+                b.active = true;
+                b.visible = (activeTab == Tab.BLOCKS);
+                b.setMessage(Component.literal(label));
+            } else {
+                b.active = false;
+                b.visible = (activeTab == Tab.BLOCKS);
+                b.setMessage(Component.literal(""));
+            }
+        }
+
+        if (blockPrevPageButton != null) {
+            blockPrevPageButton.active = blockPage > 0;
+        }
+        if (blockNextPageButton != null) {
+            int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / blockEntryButtons.length);
+            blockNextPageButton.active = blockPage < maxPage;
+        }
+
+        if (selectedBlockButton != null) {
+            selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+        }
+    }
+
+    private void syncBlockTabVisibility(boolean alsoUpdateButtons) {
+        boolean show = (activeTab == Tab.BLOCKS);
+
+        if (blockSearchBox != null) blockSearchBox.setVisible(show);
+        if (blockPrevPageButton != null) blockPrevPageButton.visible = show;
+        if (blockNextPageButton != null) blockNextPageButton.visible = show;
+        if (selectedBlockButton != null) selectedBlockButton.visible = show;
+        for (Button b : blockEntryButtons) {
+            if (b != null) b.visible = show;
+        }
+
+        if (show && alsoUpdateButtons) {
+            updateBlockEntryButtons();
+        }
+    }
+
+    private void selectBlockFromIndex(int filteredIndex) {
+        if (filteredIndex < 0 || filteredIndex >= filteredBlockIds.size()) return;
+        selectedBlockId = filteredBlockIds.get(filteredIndex);
+        selectedBlockLabel = selectedBlockId.toString();
+        if (selectedBlockButton != null) {
+            selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+        }
+    }
+
+    private void renderBlocksTab(GuiGraphics g) {
+        int x = panelX + 10;
+        int y = panelY + 8;
+        g.drawString(font, "Blocks", x, y, 0xFFFFFF);
+
+        // Small hint row
+        int hintY = panelY + 26;
+        g.drawString(font, "Search + click a block. This is just selection for now.", x, hintY, 0xAAAAAA);
+
+        int infoY = panelY + PANEL_HEIGHT - 56;
+        g.drawString(font, "Matches: " + filteredBlockIds.size(), x, infoY, 0xAAAAAA);
+    }
+
 }

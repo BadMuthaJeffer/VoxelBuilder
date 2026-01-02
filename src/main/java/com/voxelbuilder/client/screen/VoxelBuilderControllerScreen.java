@@ -56,7 +56,33 @@ public class VoxelBuilderControllerScreen extends Screen {
 
     private Tab activeTab = Tab.MODELS;
 
-    private int panelX;
+    
+
+    // Resolution / detail preset for STL voxelization (affects STL parsing only)
+    private enum DetailPreset {
+        ONE_TO_ONE("1:1", 256),
+        VERY_HIGH("Very High", 192),
+        HIGH("High", 128),
+        MEDIUM("Medium", 96),
+        LOW("Low", 64);
+
+        final String label;
+        final int stlResolution;
+
+        DetailPreset(String label, int stlResolution) {
+            this.label = label;
+            this.stlResolution = stlResolution;
+        }
+
+        DetailPreset next() {
+            DetailPreset[] v = values();
+            return v[(this.ordinal() + 1) % v.length];
+        }
+    }
+
+    private DetailPreset detailPreset = DetailPreset.MEDIUM;
+    private Button resolutionButton;
+private int panelX;
     private int panelY;
 
     private static final int PANEL_WIDTH = 260;
@@ -81,7 +107,7 @@ public class VoxelBuilderControllerScreen extends Screen {
     private Button blockPrevPageButton;
     private Button blockNextPageButton;
     private Button selectedBlockButton;
-    private final Button[] blockEntryButtons = new Button[10];
+    private final Button[] blockEntryButtons = new Button[6];
     private final List<ResourceLocation> allBlockIds = new ArrayList<>();
     private final List<ResourceLocation> filteredBlockIds = new ArrayList<>();
     private int blockPage = 0;
@@ -122,6 +148,42 @@ public class VoxelBuilderControllerScreen extends Screen {
         super(Component.literal("Voxel Builder Controller"));
     }
 
+    private void switchTab(Tab newTab) {
+        if (newTab == activeTab) return;
+
+        // Leaving Blocks: defocus the search box so it doesn't eat Enter/build hotkeys
+        if (activeTab == Tab.BLOCKS && blockSearchBox != null) {
+            blockSearchBox.setFocused(false);
+            setFocused(null);
+        }
+
+        activeTab = newTab;
+
+        // Entering Blocks: refresh list once
+        if (activeTab == Tab.BLOCKS) {
+            refreshBlockFilter();
+
+
+        // Settings tab widgets (resolution/detail picker for STL voxelization)
+        resolutionButton = addRenderableWidget(
+                Button.builder(Component.literal("Resolution: " + detailPreset.label), b -> {
+                    detailPreset = detailPreset.next();
+                    resolutionButton.setMessage(Component.literal("Resolution: " + detailPreset.label));
+
+                    // If an STL model is currently selected, re-parse to apply new resolution
+                    if (selectedIndex >= 0 && selectedIndex < modelEntries.size()) {
+                        ModelEntry cur = modelEntries.get(selectedIndex);
+                        if (cur.type == ModelType.STL_FILE) {
+                            parseSelectedModel();
+                        }
+                    }
+                }).bounds(panelX + 10, panelY + 32, 170, 16).build()
+        );
+
+        }
+    }
+
+
     /* =========================
      * Init
      * ========================= */
@@ -137,13 +199,13 @@ public class VoxelBuilderControllerScreen extends Screen {
         int gap = 5;
         int startX = panelX + (PANEL_WIDTH - (tabW * 4 + gap * 3)) / 2;
 
-        addRenderableWidget(Button.builder(Component.literal("Models"), b -> activeTab = Tab.MODELS)
+        addRenderableWidget(Button.builder(Component.literal("Models"), b -> switchTab(Tab.MODELS))
                 .bounds(startX, tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Preview"), b -> activeTab = Tab.PREVIEW)
+        addRenderableWidget(Button.builder(Component.literal("Preview"), b -> switchTab(Tab.PREVIEW))
                 .bounds(startX + (tabW + gap), tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Blocks"), b -> activeTab = Tab.BLOCKS)
+        addRenderableWidget(Button.builder(Component.literal("Blocks"), b -> switchTab(Tab.BLOCKS))
                 .bounds(startX + (tabW + gap) * 2, tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Settings"), b -> activeTab = Tab.SETTINGS)
+        addRenderableWidget(Button.builder(Component.literal("Settings"), b -> switchTab(Tab.SETTINGS))
                 .bounds(startX + (tabW + gap) * 3, tabY, tabW, tabH).build());
 
         refreshButton = addRenderableWidget(
@@ -222,7 +284,7 @@ public class VoxelBuilderControllerScreen extends Screen {
             );
         }
 
-        int pagerY = panelY + PANEL_HEIGHT - 40;
+        int pagerY = panelY + PANEL_HEIGHT - 22;
         blockPrevPageButton = addRenderableWidget(
                 Button.builder(Component.literal("<"), btn0 -> {
                     if (blockPage > 0) {
@@ -272,6 +334,11 @@ public class VoxelBuilderControllerScreen extends Screen {
         if (selectedBlockButton != null) selectedBlockButton.visible = blocksActive;
         for (Button b0 : blockEntryButtons) {
             if (b0 != null) b0.visible = blocksActive;
+        }
+
+        if (resolutionButton != null) {
+            resolutionButton.visible = (activeTab == Tab.SETTINGS);
+            resolutionButton.setMessage(Component.literal("Resolution: " + detailPreset.label));
         }
 
         originButton.visible = previewActive;
@@ -427,10 +494,10 @@ public class VoxelBuilderControllerScreen extends Screen {
         try {
             List<STLAsciiLoader.Triangle> tris = STLLoader.load(file);
             ModelNormalizer.NormalizedModel model =
-                    ModelNormalizer.normalize(tris, 64.0f);
+                    ModelNormalizer.normalize(tris, (float) detailPreset.stlResolution);
 
             STLVoxelizer.Result result =
-                    STLVoxelizer.voxelizeSurface(model.triangles, 64);
+                    STLVoxelizer.voxelizeSurface(model.triangles, detailPreset.stlResolution);
 
             voxelCache.clear();
             for (STLVoxelizer.Voxel v : result.voxels) {
@@ -557,6 +624,12 @@ public class VoxelBuilderControllerScreen extends Screen {
         GhostPreviewDebugRenderer.setPreview(currentBuildPlan);
     }
 
+    // Compatibility wrapper: older code called rebuildPreview()
+    private void rebuildPreview() {
+        rebuildBuildPlan();
+    }
+
+
     private boolean isFullySurrounded(Voxel v, Set<String> set) {
         return set.contains((v.x + 1) + "," + v.y + "," + v.z) &&
                set.contains((v.x - 1) + "," + v.y + "," + v.z) &&
@@ -592,7 +665,19 @@ public class VoxelBuilderControllerScreen extends Screen {
         allBlockIds.sort((a, b) -> a.toString().compareToIgnoreCase(b.toString()));
     }
 
-    private void applyBlockFilter() {
+    
+    // Compatibility wrapper: older UI calls these names
+    private void refreshBlockFilter() {
+        applyBlockFilter();
+        updateBlockEntryButtons();
+    }
+
+    // Compatibility wrapper: older UI calls these names
+    private void updateBlockButtons() {
+        updateBlockEntryButtons();
+    }
+
+private void applyBlockFilter() {
         loadAllBlocksIfNeeded();
         filteredBlockIds.clear();
 
