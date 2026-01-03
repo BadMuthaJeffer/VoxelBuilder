@@ -1,27 +1,20 @@
 package com.voxelbuilder.client.screen;
 
 import com.voxelbuilder.client.build.BuildPlan;
+import com.voxelbuilder.client.build.BuildPlanJsonV1;
 import com.voxelbuilder.client.model.ModelNormalizer;
 import com.voxelbuilder.client.render.GhostPreviewDebugRenderer;
 import com.voxelbuilder.client.voxel.STLAsciiLoader;
 import com.voxelbuilder.client.voxel.STLLoader;
 import com.voxelbuilder.client.voxel.STLVoxelizer;
 
-import com.voxelbuilder.client.build.VoxelBuilderSession;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
-
-import net.minecraft.core.Holder;
-import net.minecraft.core.HolderSet;
-import net.minecraft.tags.TagKey;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -46,17 +39,6 @@ public class VoxelBuilderControllerScreen extends Screen {
     private enum OriginMode { CORNER, CENTER }
     private enum ModelType { STL_FILE, CSV_FILE, CSV_FOLDER }
 
-    private enum BlockCategory {
-        ALL("All"),
-        PLANKS("Planks"),
-        LOGS("Logs"),
-        CONCRETE("Concrete"),
-        STONE("Stone");
-
-        final String label;
-        BlockCategory(String label) { this.label = label; }
-    }
-
     private static final class ModelEntry {
         final ModelType type;
         final String displayName;
@@ -75,33 +57,7 @@ public class VoxelBuilderControllerScreen extends Screen {
 
     private Tab activeTab = Tab.MODELS;
 
-    
-
-    // Resolution / detail preset for STL voxelization (affects STL parsing only)
-    private enum DetailPreset {
-        ONE_TO_ONE("1:1", 256),
-        VERY_HIGH("Very High", 192),
-        HIGH("High", 128),
-        MEDIUM("Medium", 96),
-        LOW("Low", 64);
-
-        final String label;
-        final int stlResolution;
-
-        DetailPreset(String label, int stlResolution) {
-            this.label = label;
-            this.stlResolution = stlResolution;
-        }
-
-        DetailPreset next() {
-            DetailPreset[] v = values();
-            return v[(this.ordinal() + 1) % v.length];
-        }
-    }
-
-    private DetailPreset detailPreset = DetailPreset.MEDIUM;
-    private Button resolutionButton;
-private int panelX;
+    private int panelX;
     private int panelY;
 
     private static final int PANEL_WIDTH = 260;
@@ -109,6 +65,10 @@ private int panelX;
 
     private final List<ModelEntry> modelEntries = new ArrayList<>();
     private int selectedIndex = -1;
+
+    // Models tab scrolling
+    private int modelScroll = 0; // index of first visible entry
+
 
     /* =========================
      * Buttons
@@ -123,18 +83,13 @@ private int panelX;
 
     // Blocks tab
     private EditBox blockSearchBox;
-    private Button blockCatAll;
-    private Button blockCatPlanks;
-    private Button blockCatLogs;
-    private Button blockCatConcrete;
-    private Button blockCatStone;
     private Button blockPrevPageButton;
     private Button blockNextPageButton;
     private Button selectedBlockButton;
-    private final Button[] blockEntryButtons = new Button[6];
+    private final Button[] blockEntryButtons = new Button[10];
+    private static final int BLOCK_VISIBLE_ROWS = 6; // keep UI sane; paging/scroll covers the rest
+
     private final List<ResourceLocation> allBlockIds = new ArrayList<>();
-    private final EnumMap<BlockCategory, List<ResourceLocation>> categoryCache = new EnumMap<>(BlockCategory.class);
-    private BlockCategory selectedCategory = BlockCategory.ALL;
     private final List<ResourceLocation> filteredBlockIds = new ArrayList<>();
     private int blockPage = 0;
     private ResourceLocation selectedBlockId = null;
@@ -149,19 +104,39 @@ private int panelX;
     private OriginMode originMode = OriginMode.CORNER;
     private boolean hollow = false;
 
+    
     /* =========================
+     * Detail / Resolution
+     * ========================= */
+
+    private enum DetailPreset {
+        ONE_TO_ONE("1:1", 256, 256.0f),
+        VERY_HIGH("Very High", 128, 128.0f),
+        HIGH("High", 96, 96.0f),
+        MEDIUM("Medium", 64, 64.0f),
+        LOW("Low", 48, 48.0f);
+
+        final String label;
+        final int voxelResolution;
+        final float normalizeScale;
+
+        DetailPreset(String label, int voxelResolution, float normalizeScale) {
+            this.label = label;
+            this.voxelResolution = voxelResolution;
+            this.normalizeScale = normalizeScale;
+        }
+    }
+
+    private DetailPreset detailPreset = DetailPreset.MEDIUM;
+    private Button resolutionButton;
+    private Button exportPlanButton;
+    private Button importPlanButton;
+/* =========================
      * Metadata
      * ========================= */
 
     private boolean metadataValid = false;
     private int voxelCount = 0;
-    private int plannedBlockCount = 0; // what will actually be built (after rotation/origin/hollow)
-
-    // Build time / size estimates (UI only)
-    private static final int EST_BLOCKS_PER_TICK = 50; // keep in sync with runner default
-    private static final int WARN_BLOCKS = 50_000;
-    private static final int DANGER_BLOCKS = 200_000;
-
     private int sizeX = 0, sizeY = 0, sizeZ = 0;
 
     /* =========================
@@ -181,42 +156,6 @@ private int panelX;
         super(Component.literal("Voxel Builder Controller"));
     }
 
-    private void switchTab(Tab newTab) {
-        if (newTab == activeTab) return;
-
-        // Leaving Blocks: defocus the search box so it doesn't eat Enter/build hotkeys
-        if (activeTab == Tab.BLOCKS && blockSearchBox != null) {
-            blockSearchBox.setFocused(false);
-            setFocused(null);
-        }
-
-        activeTab = newTab;
-
-        // Entering Blocks: refresh list once
-        if (activeTab == Tab.BLOCKS) {
-            refreshBlockFilter();
-
-
-        // Settings tab widgets (resolution/detail picker for STL voxelization)
-        resolutionButton = addRenderableWidget(
-                Button.builder(Component.literal("Resolution: " + detailPreset.label), b -> {
-                    detailPreset = detailPreset.next();
-                    resolutionButton.setMessage(Component.literal("Resolution: " + detailPreset.label));
-
-                    // If an STL model is currently selected, re-parse to apply new resolution
-                    if (selectedIndex >= 0 && selectedIndex < modelEntries.size()) {
-                        ModelEntry cur = modelEntries.get(selectedIndex);
-                        if (cur.type == ModelType.STL_FILE) {
-                            parseSelectedModel();
-                        }
-                    }
-                }).bounds(panelX + 10, panelY + 32, 170, 16).build()
-        );
-
-        }
-    }
-
-
     /* =========================
      * Init
      * ========================= */
@@ -232,13 +171,13 @@ private int panelX;
         int gap = 5;
         int startX = panelX + (PANEL_WIDTH - (tabW * 4 + gap * 3)) / 2;
 
-        addRenderableWidget(Button.builder(Component.literal("Models"), b -> switchTab(Tab.MODELS))
+        addRenderableWidget(Button.builder(Component.literal("Models"), b -> activeTab = Tab.MODELS)
                 .bounds(startX, tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Preview"), b -> switchTab(Tab.PREVIEW))
+        addRenderableWidget(Button.builder(Component.literal("Preview"), b -> activeTab = Tab.PREVIEW)
                 .bounds(startX + (tabW + gap), tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Blocks"), b -> switchTab(Tab.BLOCKS))
+        addRenderableWidget(Button.builder(Component.literal("Blocks"), b -> activeTab = Tab.BLOCKS)
                 .bounds(startX + (tabW + gap) * 2, tabY, tabW, tabH).build());
-        addRenderableWidget(Button.builder(Component.literal("Settings"), b -> switchTab(Tab.SETTINGS))
+        addRenderableWidget(Button.builder(Component.literal("Settings"), b -> activeTab = Tab.SETTINGS)
                 .bounds(startX + (tabW + gap) * 3, tabY, tabW, tabH).build());
 
         refreshButton = addRenderableWidget(
@@ -290,48 +229,7 @@ private int panelX;
 
         // === Blocks tab widgets ===
         int bx = panelX + 10;
-        int catY = panelY + 32;
-        int catH = 16;
-        int catW = 50;
-        int catGap = 4;
-
-        blockCatAll = addRenderableWidget(
-                Button.builder(Component.literal("All"), b -> {
-                    selectedCategory = BlockCategory.ALL;
-                    blockPage = 0;
-                    refreshBlockFilter();
-                }).bounds(bx, catY, catW, catH).build()
-        );
-        blockCatPlanks = addRenderableWidget(
-                Button.builder(Component.literal("Planks"), b -> {
-                    selectedCategory = BlockCategory.PLANKS;
-                    blockPage = 0;
-                    refreshBlockFilter();
-                }).bounds(bx + (catW + catGap) * 1, catY, catW, catH).build()
-        );
-        blockCatLogs = addRenderableWidget(
-                Button.builder(Component.literal("Logs"), b -> {
-                    selectedCategory = BlockCategory.LOGS;
-                    blockPage = 0;
-                    refreshBlockFilter();
-                }).bounds(bx + (catW + catGap) * 2, catY, catW, catH).build()
-        );
-        blockCatConcrete = addRenderableWidget(
-                Button.builder(Component.literal("Conc"), b -> {
-                    selectedCategory = BlockCategory.CONCRETE;
-                    blockPage = 0;
-                    refreshBlockFilter();
-                }).bounds(bx + (catW + catGap) * 3, catY, catW, catH).build()
-        );
-        blockCatStone = addRenderableWidget(
-                Button.builder(Component.literal("Stone"), b -> {
-                    selectedCategory = BlockCategory.STONE;
-                    blockPage = 0;
-                    refreshBlockFilter();
-                }).bounds(bx + (catW + catGap) * 4, catY, catW, catH).build()
-        );
-
-        int by = catY + catH + 4;
+        int by = panelY + 32;
 
         blockSearchBox = new EditBox(font, bx, by, PANEL_WIDTH - 20, 16, Component.literal("Search"));
         blockSearchBox.setValue("");
@@ -341,33 +239,24 @@ private int panelX;
         });
         addRenderableWidget(blockSearchBox);
 
-        int listY = by + 20;
+        int listY = by + 22;
         int rowH = 16;
         int rowGap = 2;
         for (int i = 0; i < blockEntryButtons.length; i++) {
             final int slot = i;
-            int ry = listY + i * (rowH + rowGap);
+            int ry = (i < BLOCK_VISIBLE_ROWS) ? (listY + i * (rowH + rowGap)) : (panelY + PANEL_HEIGHT + 1000);
             blockEntryButtons[i] = addRenderableWidget(
                     Button.builder(Component.literal(""), btn0 -> {
-                        int idx = blockPage * blockEntryButtons.length + slot;
+                        int idx = blockPage * getBlockPageSize() + slot;
                         if (idx < 0 || idx >= filteredBlockIds.size()) return;
                         selectedBlockId = filteredBlockIds.get(idx);
                         selectedBlockLabel = selectedBlockId.toString();
                         selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
-
-                        // Immediately apply to the session so builds work even if the screen is closed.
-                        try {
-                            Block b = BuiltInRegistries.BLOCK.get(selectedBlockId);
-                            if (b != null && b != Blocks.AIR) {
-                                VoxelBuilderSession.setSelectedBlock(b.defaultBlockState());
-                            }
-                        } catch (Throwable ignored) {}
-
                     }).bounds(bx, ry, PANEL_WIDTH - 20, rowH).build()
             );
         }
 
-        int pagerY = panelY + PANEL_HEIGHT - 22;
+        int pagerY = panelY + 34 + 22 + (BLOCK_VISIBLE_ROWS * (16 + 2)) + 8;
         blockPrevPageButton = addRenderableWidget(
                 Button.builder(Component.literal("<"), btn0 -> {
                     if (blockPage > 0) {
@@ -378,7 +267,7 @@ private int panelX;
         );
         blockNextPageButton = addRenderableWidget(
                 Button.builder(Component.literal(">"), btn0 -> {
-                    int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / blockEntryButtons.length);
+                    int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / getBlockPageSize());
                     if (blockPage < maxPage) {
                         blockPage++;
                         updateBlockButtons();
@@ -390,14 +279,47 @@ private int panelX;
                     selectedBlockId = null;
                     selectedBlockLabel = "Default";
                     selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
-
-                    // Reset session selection to default (stone)
-                    try { VoxelBuilderSession.setSelectedBlock(Blocks.STONE.defaultBlockState()); } catch (Throwable ignored) {}
-
                 }).bounds(bx + 50, pagerY, PANEL_WIDTH - 20 - 50, 16).build()
         );
 
         refreshBlockFilter();
+        // Settings tab widgets
+        int sx = panelX + 10;
+        int sy = panelY + 34;
+
+        resolutionButton = addRenderableWidget(
+                Button.builder(Component.literal("Resolution: " + detailPreset.label), b -> {
+                    DetailPreset[] vals = DetailPreset.values();
+                    int idx = 0;
+                    for (int i = 0; i < vals.length; i++) {
+                        if (vals[i] == detailPreset) { idx = i; break; }
+                    }
+                    detailPreset = vals[(idx + 1) % vals.length];
+                    resolutionButton.setMessage(Component.literal("Resolution: " + detailPreset.label));
+                    // Re-voxelize current STL model at new resolution (safe no-op for CSV)
+                    if (selectedIndex >= 0 && selectedIndex < modelEntries.size()
+                            && modelEntries.get(selectedIndex).type == ModelType.STL_FILE) {
+                        parseSelectedModel();
+                    } else {
+                        rebuildBuildPlan();
+                    }
+                }).bounds(sx, sy, PANEL_WIDTH - 20, 16).build()
+        );
+
+        exportPlanButton = addRenderableWidget(
+                Button.builder(Component.literal("Export Plan (JSON)"), b -> exportCurrentPlanJson())
+                        .bounds(sx, sy + 20, (PANEL_WIDTH - 24) / 2, 16)
+                        .build()
+        );
+
+        importPlanButton = addRenderableWidget(
+                Button.builder(Component.literal("Import Plan (JSON)"), b -> importLastPlanJson())
+                        .bounds(sx + (PANEL_WIDTH - 20) / 2 + 2, sy + 20, (PANEL_WIDTH - 24) / 2, 16)
+                        .build()
+        );
+
+        syncSettingsTabVisibility();
+
         loadModels();
     }
 
@@ -415,17 +337,6 @@ private int panelX;
         refreshButton.visible = activeTab == Tab.MODELS;
 
         boolean blocksActive = activeTab == Tab.BLOCKS;
-        if (!blocksActive && blockSearchBox != null && blockSearchBox.isFocused()) {
-            // Prevent hidden search box from eating hotkeys when user leaves the Blocks tab
-            blockSearchBox.setFocused(false);
-            setFocused(null);
-        }
-
-        if (blockCatAll != null) blockCatAll.visible = blocksActive;
-        if (blockCatPlanks != null) blockCatPlanks.visible = blocksActive;
-        if (blockCatLogs != null) blockCatLogs.visible = blocksActive;
-        if (blockCatConcrete != null) blockCatConcrete.visible = blocksActive;
-        if (blockCatStone != null) blockCatStone.visible = blocksActive;
         if (blockSearchBox != null) blockSearchBox.visible = blocksActive;
         if (blockPrevPageButton != null) blockPrevPageButton.visible = blocksActive;
         if (blockNextPageButton != null) blockNextPageButton.visible = blocksActive;
@@ -434,14 +345,11 @@ private int panelX;
             if (b0 != null) b0.visible = blocksActive;
         }
 
-        if (blocksActive) {
-            updateBlockCategoryButtonLabels();
-        }
+        boolean settingsActive = activeTab == Tab.SETTINGS;
+        if (resolutionButton != null) resolutionButton.visible = settingsActive;
+        if (exportPlanButton != null) exportPlanButton.visible = settingsActive;
+        if (importPlanButton != null) importPlanButton.visible = settingsActive;
 
-        if (resolutionButton != null) {
-            resolutionButton.visible = (activeTab == Tab.SETTINGS);
-            resolutionButton.setMessage(Component.literal("Resolution: " + detailPreset.label));
-        }
 
         originButton.visible = previewActive;
         hollowButton.visible = previewActive;
@@ -470,16 +378,35 @@ private int panelX;
 
     private void renderModelsTab(GuiGraphics g) {
         int x = panelX + 10;
-        int y = panelY + 32;
+        int y0 = panelY + 32;
 
-        for (int i = 0; i < modelEntries.size(); i++) {
+        int listBottom = panelY + PANEL_HEIGHT - 16;
+        int rowH = 12;
+        int visibleRows = Math.max(1, (listBottom - y0) / rowH);
+
+        int maxScroll = Math.max(0, modelEntries.size() - visibleRows);
+        if (modelScroll < 0) modelScroll = 0;
+        if (modelScroll > maxScroll) modelScroll = maxScroll;
+
+        int y = y0;
+        for (int row = 0; row < visibleRows; row++) {
+            int i = modelScroll + row;
+            if (i < 0 || i >= modelEntries.size()) break;
+
             if (i == selectedIndex) {
                 g.fill(x - 2, y - 1, x + PANEL_WIDTH - 18, y + 11, 0xFF3A3A3A);
             }
             g.drawString(font, modelEntries.get(i).displayName, x, y, 0xFFFFFF);
-            y += 12;
+            y += rowH;
+        }
+
+        if (modelEntries.size() > visibleRows) {
+            g.drawString(font,
+                    "Scroll: " + (modelScroll + 1) + "-" + Math.min(modelScroll + visibleRows, modelEntries.size()) + " / " + modelEntries.size(),
+                    x, listBottom - 10, 0xAAAAAA);
         }
     }
+
 
     private void renderPreviewTab(GuiGraphics g) {
         int x = panelX + 10;
@@ -490,39 +417,42 @@ private int panelX;
             return;
         }
 
-        g.drawString(font, "Raw voxels: " + voxelCount, x, y, 0xFFFFFF); y += 12;
-        g.drawString(font, "Planned blocks: " + plannedBlockCount + (hollow ? " (Hollow)" : " (Solid)"), x, y, 0xFFFFFF); y += 12;
+        // Raw voxel count (what was loaded/voxelized)
+        g.drawString(font, "Raw voxels: " + voxelCount, x, y, 0xFFFFFF);
+        y += 12;
 
-        // Estimate based on current runner rate (blocks/tick) and 20 TPS
-        if (plannedBlockCount > 0) {
-            double blocksPerSecond = Math.max(1.0, EST_BLOCKS_PER_TICK * 20.0);
-            long etaSeconds = (long) Math.ceil(plannedBlockCount / blocksPerSecond);
+        // Planned blocks (what will actually be built)
+        int plannedBlocks = (currentBuildPlan != null) ? currentBuildPlan.getBlockCount() : voxelCount;
+        g.drawString(font, "Planned blocks: " + plannedBlocks + (hollow ? " (Hollow)" : " (Solid)"), x, y, 0xFFFFFF);
+        y += 12;
 
-            String etaText;
-            if (etaSeconds >= 3600) {
-                long h = etaSeconds / 3600;
-                long m = (etaSeconds % 3600) / 60;
-                etaText = h + "h " + m + "m";
-            } else {
-                long m = etaSeconds / 60;
-                long s = etaSeconds % 60;
-                etaText = m + "m " + s + "s";
-            }
+        g.drawString(font, "Size: " + getRotatedSizeX() + " x " + sizeY + " x " + getRotatedSizeZ(), x, y, 0xFFFFFF);
+        y += 12;
 
-            int color = 0xAAAAAA;
-            if (plannedBlockCount >= DANGER_BLOCKS) color = 0xFF5555;
-            else if (plannedBlockCount >= WARN_BLOCKS) color = 0xFFAA00;
+        // ETA estimate based on current placement rate (default 50 blocks/tick)
+        final int assumedBlocksPerTick = 50;
+        if (plannedBlocks > 0) {
+            long ticks = (plannedBlocks + assumedBlocksPerTick - 1L) / assumedBlocksPerTick;
+            long seconds = (ticks + 19L) / 20L;
+            long minutes = seconds / 60L;
+            long remSec = seconds % 60L;
 
-            g.drawString(font, "Est. time: ~" + etaText + " @ " + EST_BLOCKS_PER_TICK + "/tick", x, y, color);
+            String eta = (minutes > 0) ? ("~" + minutes + "m " + remSec + "s") : ("~" + remSec + "s");
+            int warnColor = 0xFFFFFF;
+            if (plannedBlocks >= 200000) warnColor = 0xFF5555; // red
+            else if (plannedBlocks >= 50000) warnColor = 0xFFFF55; // yellow
+
+            g.drawString(font, "Est. time: " + eta + " @ " + assumedBlocksPerTick + "/tick", x, y, warnColor);
             y += 12;
 
-            if (plannedBlockCount >= WARN_BLOCKS) {
-                g.drawString(font, "Tip: Hollow / lower detail for faster builds.", x, y, 0x888888);
+            if (plannedBlocks >= 200000) {
+                g.drawString(font, "Warning: very large build (expect lag).", x, y, 0xFF5555);
+                y += 12;
+            } else if (plannedBlocks >= 50000) {
+                g.drawString(font, "Tip: large build (consider lower resolution).", x, y, 0xFFFF55);
                 y += 12;
             }
         }
-        g.drawString(font, "Size: " + getRotatedSizeX() + " x " + sizeY + " x " + getRotatedSizeZ(),
-                x, y, 0xFFFFFF);
     }
 
 
@@ -532,22 +462,58 @@ private int panelX;
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (activeTab == Tab.MODELS && button == 0) {
             int x = panelX + 10;
-            int y = panelY + 32;
+            int y0 = panelY + 32;
 
-            for (int i = 0; i < modelEntries.size(); i++) {
-                if (mouseX >= x && mouseX <= x + PANEL_WIDTH - 20 &&
-                        mouseY >= y && mouseY <= y + 12) {
-                    selectedIndex = i;
+            int listBottom = panelY + PANEL_HEIGHT - 16;
+            int rowH = 12;
+            int visibleRows = Math.max(1, (listBottom - y0) / rowH);
+
+            int maxScroll = Math.max(0, modelEntries.size() - visibleRows);
+            if (modelScroll < 0) modelScroll = 0;
+            if (modelScroll > maxScroll) modelScroll = maxScroll;
+
+            double relY = mouseY - y0;
+            if (mouseX >= x && mouseX <= x + PANEL_WIDTH - 20 && relY >= 0 && mouseY <= listBottom) {
+                int row = (int) (relY / rowH);
+                int idx = modelScroll + row;
+                if (idx >= 0 && idx < modelEntries.size()) {
+                    selectedIndex = idx;
                     parseSelectedModel();
                     return true;
                 }
-                y += 12;
             }
         }
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
-    /* =========================
+
+    
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (activeTab == Tab.MODELS) {
+            int y0 = panelY + 32;
+            int listBottom = panelY + PANEL_HEIGHT - 16;
+            if (mouseY >= y0 && mouseY <= listBottom) {
+                modelScroll -= (int) Math.signum(scrollY);
+                return true;
+            }
+        } else if (activeTab == Tab.BLOCKS) {
+            int by = panelY + 34;
+            int listY = by + 22;
+            int rowH = 16;
+            int rowGap = 2;
+            int listH = BLOCK_VISIBLE_ROWS * (rowH + rowGap);
+            if (mouseY >= listY && mouseY <= listY + listH) {
+                int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / getBlockPageSize());
+                if (scrollY > 0) blockPage = Math.max(0, blockPage - 1);
+                else if (scrollY < 0) blockPage = Math.min(maxPage, blockPage + 1);
+                updateBlockEntryButtons();
+                return true;
+            }
+        }
+        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+    }
+
+/* =========================
      * Model loading
      * ========================= */
 
@@ -599,8 +565,6 @@ private int panelX;
     private void clearParsedData() {
         metadataValid = false;
         voxelCount = 0;
-        plannedBlockCount = 0;
-
         sizeX = sizeY = sizeZ = 0;
         voxelCache.clear();
         orderedBuildPlan.clear();
@@ -628,10 +592,10 @@ private int panelX;
         try {
             List<STLAsciiLoader.Triangle> tris = STLLoader.load(file);
             ModelNormalizer.NormalizedModel model =
-                    ModelNormalizer.normalize(tris, (float) detailPreset.stlResolution);
+                    ModelNormalizer.normalize(tris, detailPreset.normalizeScale);
 
             STLVoxelizer.Result result =
-                    STLVoxelizer.voxelizeSurface(model.triangles, detailPreset.stlResolution);
+                    STLVoxelizer.voxelizeSurface(model.triangles, detailPreset.voxelResolution);
 
             voxelCache.clear();
             for (STLVoxelizer.Voxel v : result.voxels) {
@@ -754,17 +718,9 @@ private int panelX;
             ));
         }
 
-        plannedBlockCount = blocks.size();
-
         currentBuildPlan = new BuildPlan(blocks, dispX, sizeY, dispZ);
         GhostPreviewDebugRenderer.setPreview(currentBuildPlan);
     }
-
-    // Compatibility wrapper: older code called rebuildPreview()
-    private void rebuildPreview() {
-        rebuildBuildPlan();
-    }
-
 
     private boolean isFullySurrounded(Voxel v, Set<String> set) {
         return set.contains((v.x + 1) + "," + v.y + "," + v.z) &&
@@ -801,71 +757,9 @@ private int panelX;
         allBlockIds.sort((a, b) -> a.toString().compareToIgnoreCase(b.toString()));
     }
 
-    private void updateBlockCategoryButtonLabels() {
-        if (blockCatAll != null) blockCatAll.setMessage(Component.literal(selectedCategory == BlockCategory.ALL ? "[All]" : "All"));
-        if (blockCatPlanks != null) blockCatPlanks.setMessage(Component.literal(selectedCategory == BlockCategory.PLANKS ? "[Planks]" : "Planks"));
-        if (blockCatLogs != null) blockCatLogs.setMessage(Component.literal(selectedCategory == BlockCategory.LOGS ? "[Logs]" : "Logs"));
-        if (blockCatConcrete != null) blockCatConcrete.setMessage(Component.literal(selectedCategory == BlockCategory.CONCRETE ? "[Conc]" : "Conc"));
-        if (blockCatStone != null) blockCatStone.setMessage(Component.literal(selectedCategory == BlockCategory.STONE ? "[Stone]" : "Stone"));
-    }
-
-    private List<ResourceLocation> getBlockIdsForSelectedCategory() {
-        if (selectedCategory == BlockCategory.ALL) {
-            loadAllBlocksIfNeeded();
-            return allBlockIds;
-        }
-
-        List<ResourceLocation> cached = categoryCache.get(selectedCategory);
-        if (cached != null) {
-            return cached;
-        }
-
-        // Tag-based categories (includes modded blocks if they add themselves to these tags)
-        final Set<ResourceLocation> out = new HashSet<>();
-        if (selectedCategory == BlockCategory.PLANKS) {
-            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "planks")), out);
-        } else if (selectedCategory == BlockCategory.LOGS) {
-            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "logs")), out);
-        } else if (selectedCategory == BlockCategory.CONCRETE) {
-            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "concrete")), out);
-        } else if (selectedCategory == BlockCategory.STONE) {
-            // "Stone-ish" union: covers vanilla + most modded stones that follow tagging conventions
-            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "base_stone_overworld")), out);
-            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "base_stone_nether")), out);
-            collectTagIds(TagKey.create(Registries.BLOCK, ResourceLocation.fromNamespaceAndPath("minecraft", "stone_ore_replaceables")), out);
-        }
-
-        List<ResourceLocation> list = new ArrayList<>(out);
-        list.sort((a, b) -> a.toString().compareToIgnoreCase(b.toString()));
-        categoryCache.put(selectedCategory, list);
-        return list;
-    }
-
-    private void collectTagIds(TagKey<Block> tag, Set<ResourceLocation> out) {
-        Optional<HolderSet.Named<Block>> opt = BuiltInRegistries.BLOCK.getTag(tag);
-        if (opt.isEmpty()) return;
-        HolderSet.Named<Block> named = opt.get();
-        for (Holder<Block> h : named) {
-            h.unwrapKey().ifPresent(key -> out.add(key.location()));
-        }
-    }
-
-    
-    // Compatibility wrapper: older UI calls these names
-    private void refreshBlockFilter() {
-        applyBlockFilter();
-        updateBlockEntryButtons();
-    }
-
-    // Compatibility wrapper: older UI calls these names
-    private void updateBlockButtons() {
-        updateBlockEntryButtons();
-    }
-
-private void applyBlockFilter() {
+    private void applyBlockFilter() {
+        loadAllBlocksIfNeeded();
         filteredBlockIds.clear();
-
-        List<ResourceLocation> source = getBlockIdsForSelectedCategory();
 
         String q = "";
         if (blockSearchBox != null) {
@@ -874,9 +768,9 @@ private void applyBlockFilter() {
         q = q == null ? "" : q.trim().toLowerCase(java.util.Locale.ROOT);
 
         if (q.isEmpty()) {
-            filteredBlockIds.addAll(source);
+            filteredBlockIds.addAll(allBlockIds);
         } else {
-            for (ResourceLocation id : source) {
+            for (ResourceLocation id : allBlockIds) {
                 if (id.toString().toLowerCase(java.util.Locale.ROOT).contains(q)) {
                     filteredBlockIds.add(id);
                 }
@@ -884,7 +778,7 @@ private void applyBlockFilter() {
         }
 
         // Clamp page
-        int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / blockEntryButtons.length);
+        int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / getBlockPageSize());
         if (blockPage > maxPage) blockPage = maxPage;
         if (blockPage < 0) blockPage = 0;
     }
@@ -893,10 +787,16 @@ private void applyBlockFilter() {
         if (blockSearchBox == null) return;
         applyBlockFilter();
 
-        int start = blockPage * blockEntryButtons.length;
+        int start = blockPage * getBlockPageSize();
         for (int i = 0; i < blockEntryButtons.length; i++) {
             Button b = blockEntryButtons[i];
             if (b == null) continue;
+
+            if (i >= BLOCK_VISIBLE_ROWS) {
+                b.visible = false;
+                b.active = false;
+                continue;
+            }
 
             int idx = start + i;
             if (idx >= 0 && idx < filteredBlockIds.size()) {
@@ -919,7 +819,7 @@ private void applyBlockFilter() {
             blockPrevPageButton.active = blockPage > 0;
         }
         if (blockNextPageButton != null) {
-            int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / blockEntryButtons.length);
+            int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / getBlockPageSize());
             blockNextPageButton.active = blockPage < maxPage;
         }
 
@@ -928,7 +828,15 @@ private void applyBlockFilter() {
         }
     }
 
-    private void syncBlockTabVisibility(boolean alsoUpdateButtons) {
+    
+    private void syncSettingsTabVisibility() {
+        boolean show = (activeTab == Tab.SETTINGS);
+        if (resolutionButton != null) resolutionButton.visible = show;
+        if (exportPlanButton != null) exportPlanButton.visible = show;
+        if (importPlanButton != null) importPlanButton.visible = show;
+    }
+
+private void syncBlockTabVisibility(boolean alsoUpdateButtons) {
         boolean show = (activeTab == Tab.BLOCKS);
 
         if (blockSearchBox != null) blockSearchBox.setVisible(show);
@@ -960,20 +868,105 @@ private void applyBlockFilter() {
 
         // Small hint row
         int hintY = panelY + 26;
-        g.drawString(font, "Search + click a block. This controls what block gets built.", x, hintY, 0xAAAAAA);
+        g.drawString(font, "Search + click a block (paged / scroll).", x, hintY, 0xAAAAAA);
 
         int infoY = panelY + PANEL_HEIGHT - 56;
         g.drawString(font, "Matches: " + filteredBlockIds.size(), x, infoY, 0xAAAAAA);
     }
 
 
+    // ---------------------------------------------------------------------
+    // Compatibility wrappers (additive-only)
+    // These method names existed in earlier iterations of the screen; some UI code still calls them.
+    // ---------------------------------------------------------------------
 
-    // ===== Block selection (for hotkeys/build confirmation) =====
-    public ResourceLocation getSelectedBlockId() {
-        return selectedBlockId;
+
+    private void exportCurrentPlanJson() {
+        try {
+            if (currentBuildPlan == null) {
+                return;
+            }
+            java.nio.file.Path file = BuildPlanJsonV1.defaultLastPlanPath();
+            BuildPlanJsonV1.write(file, currentBuildPlan, selectedBlockId);
+        } catch (Throwable ignored) {
+        }
     }
 
-    public String getSelectedBlockLabel() {
-        return selectedBlockLabel;
+    private void importLastPlanJson() {
+        try {
+            java.nio.file.Path file = BuildPlanJsonV1.defaultLastPlanPath();
+            BuildPlanJsonV1.Loaded loaded = BuildPlanJsonV1.read(file);
+
+            if (loaded == null || loaded.plan == null) {
+                return;
+            }
+
+            // Apply loaded plan as the current preview/build plan.
+            this.currentBuildPlan = loaded.plan;
+            this.sizeX = loaded.plan.getSizeX();
+            this.sizeY = loaded.plan.getSizeY();
+            this.sizeZ = loaded.plan.getSizeZ();
+
+            // Raw voxel count is unknown for imported plans; use planned count for display.
+            this.voxelCount = loaded.plan.getBlockCount();
+
+            // Restore selected block if present.
+            if (loaded.blockId != null) {
+                this.selectedBlockId = loaded.blockId;
+                try {
+                    net.minecraft.world.level.block.Block b = BuiltInRegistries.BLOCK.get(loaded.blockId);
+                    if (b != null && b != net.minecraft.world.level.block.Blocks.AIR) {
+                        com.voxelbuilder.client.build.VoxelBuilderSession.setSelectedBlock(b.defaultBlockState());
+                    }
+                } catch (Throwable ignored2) {
+                }
+            }
+
+            try {
+                GhostPreviewDebugRenderer.setPreview(currentBuildPlan);
+            } catch (Throwable ignored3) {
+            }
+
+            // Imported plan invalidates placement/confirm state; keep placement disarmed.
+            try { GhostPreviewDebugRenderer.disarmPlacement(); } catch (Throwable ignored4) {}
+        } catch (Throwable ignored) {
+        }
     }
+    private void rebuildPreview() {
+        // Current implementation uses a "build plan" rebuild as the authoritative preview refresh.
+        try {
+            rebuildBuildPlan();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void refreshBlockFilter() {
+        // Apply search/category filters then refresh visible buttons.
+        try {
+            applyBlockFilter();
+        } catch (Throwable ignored) {
+        }
+        try {
+            int maxPage = Math.max(0, (filteredBlockIds.size() - 1) / getBlockPageSize());
+            if (blockPage > maxPage) blockPage = maxPage;
+        } catch (Throwable ignored) {
+        }
+        try {
+            updateBlockEntryButtons();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void updateBlockButtons() {
+        try {
+            updateBlockEntryButtons();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private int getBlockPageSize() {
+        // Fixed number of visible rows in the Blocks tab to keep UI clean and fast.
+        return 6;
+    }
+
 }
