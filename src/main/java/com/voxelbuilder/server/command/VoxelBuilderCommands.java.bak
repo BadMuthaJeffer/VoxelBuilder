@@ -1,0 +1,46 @@
+package com.voxelbuilder.server.command;
+
+import com.mojang.brigadier.CommandDispatcher;
+import com.voxelbuilder.VoxelBuilderServerConfig;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
+
+public final class VoxelBuilderCommands {
+
+    private VoxelBuilderCommands() {}
+
+    public static void onRegisterCommands(RegisterCommandsEvent event) {
+        CommandDispatcher<CommandSourceStack> d = event.getDispatcher();
+
+        d.register(
+                Commands.literal("voxelbuilder")
+                        .requires(src -> src.hasPermission(2)) // OP-only
+                        .then(Commands.literal("config")
+                                .executes(ctx -> {
+                                    CommandSourceStack src = ctx.getSource();
+
+                                    src.sendSuccess(() -> Component.literal("VoxelBuilder SERVER config:"), false);
+
+                                    src.sendSuccess(() -> Component.literal("  globalBlocksPerTick = " + VoxelBuilderServerConfig.GLOBAL_BLOCKS_PER_TICK.get()), false);
+                                    src.sendSuccess(() -> Component.literal("  perJobBlocksPerTick = " + VoxelBuilderServerConfig.PER_JOB_BLOCKS_PER_TICK.get()), false);
+
+                                    src.sendSuccess(() -> Component.literal("  maxActiveJobsGlobal = " + VoxelBuilderServerConfig.MAX_ACTIVE_JOBS_GLOBAL.get()), false);
+                                    src.sendSuccess(() -> Component.literal("  maxActiveJobsPerPlayer = " + VoxelBuilderServerConfig.MAX_ACTIVE_JOBS_PER_PLAYER.get()), false);
+
+                                    src.sendSuccess(() -> Component.literal("  maxDistanceFromAnchor = " + VoxelBuilderServerConfig.MAX_DISTANCE_FROM_ANCHOR.get()), false);
+                                    src.sendSuccess(() -> Component.literal("  cancelWhenOutOfRange = " + VoxelBuilderServerConfig.CANCEL_WHEN_OUT_OF_RANGE.get()), false);
+                                    src.sendSuccess(() -> Component.literal("  cancelOnDimensionChange = " + VoxelBuilderServerConfig.CANCEL_ON_DIMENSION_CHANGE.get()), false);
+                                    src.sendSuccess(() -> Component.literal("  skipUnloadedChunks = " + VoxelBuilderServerConfig.SKIP_UNLOADED_CHUNKS.get()), false);
+
+                                    src.sendSuccess(() -> Component.literal("  maxExtentXZ = " + VoxelBuilderServerConfig.MAX_EXTENT_XZ.get()), false);
+                                    src.sendSuccess(() -> Component.literal("  maxExtentY = " + VoxelBuilderServerConfig.MAX_EXTENT_Y.get()), false);
+
+                                    src.sendSuccess(() -> Component.literal("  maxPacketBlocks = " + VoxelBuilderServerConfig.MAX_PACKET_BLOCKS.get()), false);
+
+                                    return 1;
+                                }))
+        );
+    }
+}

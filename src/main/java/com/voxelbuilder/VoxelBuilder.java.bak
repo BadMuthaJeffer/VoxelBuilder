@@ -5,7 +5,6 @@ import com.voxelbuilder.block.BuildAnchorBlock;
 import com.voxelbuilder.block.VoxelBuilderControllerBlock;
 import com.voxelbuilder.client.VoxelBuilderClientInit;
 import com.voxelbuilder.server.build.ServerBuildManager;
-import com.voxelbuilder.server.command.VoxelBuilderCommands;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockBehaviour;
@@ -70,11 +69,8 @@ public class VoxelBuilder {
         // Server config (world/serverconfig) for MP limits & throttles
         container.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, VoxelBuilderServerConfig.SPEC);
 
-        // Server-authoritative build execution tick
+        // Additive MP: server-authoritative build execution tick.
         NeoForge.EVENT_BUS.addListener(ServerBuildManager::onServerTick);
-
-        // OP-only command: /voxelbuilder config
-        NeoForge.EVENT_BUS.addListener(VoxelBuilderCommands::onRegisterCommands);
 
         if (FMLEnvironment.dist == Dist.CLIENT) {
             VoxelBuilderClientInit.initClient();

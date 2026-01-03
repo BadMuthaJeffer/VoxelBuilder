@@ -249,9 +249,7 @@ public class VoxelBuilderControllerScreen extends Screen {
                     Button.builder(Component.literal(""), btn0 -> {
                         int idx = blockPage * getBlockPageSize() + slot;
                         if (idx < 0 || idx >= filteredBlockIds.size()) return;
-                        selectedBlockId = filteredBlockIds.get(idx);
-                        selectedBlockLabel = selectedBlockId.toString();
-                        selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+                        selectBlockFromIndex(idx);
                     }).bounds(bx, ry, PANEL_WIDTH - 20, rowH).build()
             );
         }
@@ -279,6 +277,13 @@ public class VoxelBuilderControllerScreen extends Screen {
                     selectedBlockId = null;
                     selectedBlockLabel = "Default";
                     selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
+                    // IMPORTANT: ensure the build session uses the default block when reset.
+                    try {
+                        com.voxelbuilder.client.build.VoxelBuilderSession.setSelectedBlock(
+                                net.minecraft.world.level.block.Blocks.STONE.defaultBlockState()
+                        );
+                    } catch (Throwable ignored) {
+                    }
                 }).bounds(bx + 50, pagerY, PANEL_WIDTH - 20 - 50, 16).build()
         );
 
@@ -405,7 +410,16 @@ public class VoxelBuilderControllerScreen extends Screen {
                     "Scroll: " + (modelScroll + 1) + "-" + Math.min(modelScroll + visibleRows, modelEntries.size()) + " / " + modelEntries.size(),
                     x, listBottom - 10, 0xAAAAAA);
         }
-    }
+    
+        // MP status line (updates live during multiplayer builds)
+        try {
+            String mp = com.voxelbuilder.client.mp.MpBuildClientState.getStatusLine();
+            if (mp != null && !mp.isEmpty()) {
+                g.drawString(font, mp, x, panelY + PANEL_HEIGHT - 12, 0xAAAAAA);
+            }
+        } catch (Throwable ignored) {
+        }
+}
 
 
     private void renderPreviewTab(GuiGraphics g) {
@@ -859,6 +873,14 @@ private void syncBlockTabVisibility(boolean alsoUpdateButtons) {
         if (selectedBlockButton != null) {
             selectedBlockButton.setMessage(Component.literal("Block: " + selectedBlockLabel));
         }
+// IMPORTANT: push selection into the build session so the builder uses it.
+try {
+    net.minecraft.world.level.block.Block b = BuiltInRegistries.BLOCK.get(selectedBlockId);
+    if (b != null && b != net.minecraft.world.level.block.Blocks.AIR) {
+        com.voxelbuilder.client.build.VoxelBuilderSession.setSelectedBlock(b.defaultBlockState());
+    }
+} catch (Throwable ignored) {
+}
     }
 
     private void renderBlocksTab(GuiGraphics g) {

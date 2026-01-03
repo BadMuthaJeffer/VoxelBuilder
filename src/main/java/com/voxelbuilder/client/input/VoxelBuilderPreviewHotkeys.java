@@ -147,16 +147,28 @@ public final class VoxelBuilderPreviewHotkeys {
                 confirmedLocked = false;
                 setRendererPreviewLocked(false);
 
-                // Do not clear preview plan. Only clear "confirmed" session, if present.
-                clearBuildSessionBestEffort();
-
-                if (mc.player != null) {
-                    mc.player.displayClientMessage(
-                            Component.literal("UNLOCKED: preview editable again."),
-                            true
+            // If we have an active MP job, try to cancel it too.
+            try {
+                java.util.UUID active = com.voxelbuilder.client.mp.MpBuildClientState.getActivePlanId();
+                if (active != null) {
+                    net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+                            new com.voxelbuilder.network.payload.CancelBuildC2S(active)
                     );
+                    com.voxelbuilder.client.mp.MpBuildClientState.clear(active);
                 }
+            } catch (Throwable ignored) {}
+
+            // Do not clear preview plan. Only clear "confirmed" session, if present.
+            clearBuildSessionBestEffort();
+
+            if (mc.player != null) {
+                mc.player.displayClientMessage(
+                Component.literal("UNLOCKED: preview editable again."),
+                true
+                );
             }
+        }
+
 
             // If confirmed/locked, do not allow rotate/nudge.
             if (confirmedLocked) {
