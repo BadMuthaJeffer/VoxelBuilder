@@ -373,23 +373,6 @@ public final class VoxelBuilderPreviewHotkeys {
             int ry = Math.round(com.voxelbuilder.client.render.GhostPreviewDebugRenderer.getPreviewRotationY());
             int rz = Math.round(com.voxelbuilder.client.render.GhostPreviewDebugRenderer.getPreviewRotationZ());
 
-
-            // Capture selected block from the controller screen at confirm time (if available).
-            try {
-                net.minecraft.client.gui.screens.Screen scr = net.minecraft.client.Minecraft.getInstance().screen;
-                if (scr instanceof com.voxelbuilder.client.screen.VoxelBuilderControllerScreen vbs) {
-                    net.minecraft.resources.ResourceLocation id = vbs.getSelectedBlockId();
-                    if (id != null) {
-                        net.minecraft.world.level.block.Block b = net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(id);
-                        if (b != null && b != net.minecraft.world.level.block.Blocks.AIR) {
-                            com.voxelbuilder.client.build.VoxelBuilderSession.setSelectedBlock(b.defaultBlockState());
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {
-                // ignore; selection is optional
-            }
-
             // Freeze into the session (build must use confirmed blocks, not live rotation).
             com.voxelbuilder.client.build.VoxelBuilderSession.confirmFrozen(frozen, anchor, rx, ry, rz);
 
