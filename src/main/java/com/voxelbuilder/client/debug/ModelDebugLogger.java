@@ -1,14 +1,14 @@
 package com.voxelbuilder.client.debug;
 
 import com.voxelbuilder.client.model.ModelFileManager;
+import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
-import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 
 import java.util.List;
 
-@EventBusSubscriber(modid = "voxelbuilder", bus = EventBusSubscriber.Bus.MOD)
+@EventBusSubscriber(modid = "voxelbuilder", bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class ModelDebugLogger {
 
     private ModelDebugLogger() {}

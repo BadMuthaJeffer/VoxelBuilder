@@ -4,21 +4,21 @@ import com.mojang.logging.LogUtils;
 import com.voxelbuilder.block.BuildAnchorBlock;
 import com.voxelbuilder.block.VoxelBuilderControllerBlock;
 import com.voxelbuilder.client.VoxelBuilderClientInit;
-
+import com.voxelbuilder.server.build.ServerBuildManager;
+import com.voxelbuilder.server.command.VoxelBuilderCommands;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.material.MapColor;
-
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLEnvironment;
+import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
-
 import org.slf4j.Logger;
 
 @Mod(VoxelBuilder.MODID)
@@ -27,17 +27,16 @@ public class VoxelBuilder {
     public static final String MODID = "voxelbuilder";
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    public static final DeferredRegister.Blocks BLOCKS =
-            DeferredRegister.createBlocks(MODID);
-    public static final DeferredRegister.Items ITEMS =
-            DeferredRegister.createItems(MODID);
+    public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(MODID);
+    public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
 
     public static final DeferredBlock<Block> VOXEL_BUILDER_CONTROLLER =
-            BLOCKS.register("voxel_builder_controller",
+            BLOCKS.register(
+                    "voxel_builder_controller",
                     () -> new VoxelBuilderControllerBlock(
                             BlockBehaviour.Properties.of()
-                                    .mapColor(MapColor.METAL)
-                                    .strength(3.0f)
+                                    .mapColor(MapColor.STONE)
+                                    .strength(2.0F, 6.0F)
                     )
             );
 
@@ -48,12 +47,12 @@ public class VoxelBuilder {
             );
 
     public static final DeferredBlock<Block> BUILD_ANCHOR =
-            BLOCKS.register("build_anchor",
+            BLOCKS.register(
+                    "build_anchor",
                     () -> new BuildAnchorBlock(
                             BlockBehaviour.Properties.of()
-                                    .mapColor(MapColor.COLOR_CYAN)
-                                    .noCollission()
-                                    .strength(0.1f)
+                                    .mapColor(MapColor.COLOR_ORANGE)
+                                    .strength(1.0F, 3.0F)
                     )
             );
 
@@ -67,6 +66,15 @@ public class VoxelBuilder {
 
         BLOCKS.register(bus);
         ITEMS.register(bus);
+
+        // Server config (world/serverconfig) for MP limits & throttles
+        container.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, VoxelBuilderServerConfig.SPEC);
+
+        // Server-authoritative build execution tick
+        NeoForge.EVENT_BUS.addListener(ServerBuildManager::onServerTick);
+
+        // OP-only command: /voxelbuilder config
+        NeoForge.EVENT_BUS.addListener(VoxelBuilderCommands::onRegisterCommands);
 
         if (FMLEnvironment.dist == Dist.CLIENT) {
             VoxelBuilderClientInit.initClient();
