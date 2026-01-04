@@ -1,5 +1,6 @@
 package com.voxelbuilder;
 
+import net.minecraft.resources.ResourceLocation;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.config.ModConfig;
@@ -13,7 +14,7 @@ import net.neoforged.neoforge.common.ModConfigSpec;
  * - Register this spec in your mod constructor:
  *     container.registerConfig(ModConfig.Type.SERVER, VoxelBuilderServerConfig.SPEC);
  *
- * SERVER configs are synced to clients by NeoForge. citeturn1view0
+ * SERVER configs are synced to clients by NeoForge. 
  */
 @EventBusSubscriber(modid = VoxelBuilder.MODID, bus = EventBusSubscriber.Bus.MOD)
 public final class VoxelBuilderServerConfig {
@@ -38,6 +39,31 @@ public final class VoxelBuilderServerConfig {
     public static final ModConfigSpec.IntValue MAX_ACTIVE_JOBS_PER_PLAYER = BUILDER
             .comment("Maximum active build jobs per player (prevents double-submit spam).")
             .defineInRange("server.maxActiveJobsPerPlayer", 1, 1, 16);
+
+    // ---- Interior lighting pass (after build finishes) ----
+    public static final ModConfigSpec.BooleanValue LIGHTING_ENABLED = BUILDER
+            .comment("If true, runs an interior lighting pass after the build finishes (to reduce mob spawning in hollow interiors).")
+            .define("server.lightingEnabled", true);
+
+    public static final ModConfigSpec.IntValue LIGHTING_SPACING_XZ = BUILDER
+            .comment("Lattice spacing on X/Z for the interior lighting pass.")
+            .defineInRange("server.lightingSpacingXZ", 12, 1, 256);
+
+    public static final ModConfigSpec.IntValue LIGHTING_SPACING_Y = BUILDER
+            .comment("Lattice spacing on Y for the interior lighting pass.")
+            .defineInRange("server.lightingSpacingY", 7, 1, 256);
+
+    public static final ModConfigSpec.IntValue LIGHTING_SEARCH_RADIUS = BUILDER
+            .comment("Search radius around each lattice point to find an interior-facing surface block.")
+            .defineInRange("server.lightingSearchRadius", 3, 0, 32);
+
+    public static final ModConfigSpec.IntValue LIGHTING_BLOCKS_PER_TICK = BUILDER
+            .comment("Per-job placement budget per server tick for the interior lighting pass (still capped by globalBlocksPerTick).")
+            .defineInRange("server.lightingBlocksPerTick", 200, 1, 100000);
+
+    public static final ModConfigSpec.ConfigValue<String> LIGHTING_BLOCK_ID = BUILDER
+            .comment("Block id used for interior lighting.")
+            .define("server.lightingBlockId", "minecraft:glowstone", s -> s instanceof String str && ResourceLocation.tryParse(str) != null);
 
     // ---- Safety / anti-grief ----
     public static final ModConfigSpec.IntValue MAX_DISTANCE_FROM_ANCHOR = BUILDER
@@ -77,6 +103,13 @@ public final class VoxelBuilderServerConfig {
     public static volatile int maxActiveJobsGlobal = 16;
     public static volatile int maxActiveJobsPerPlayer = 1;
 
+    public static volatile boolean lightingEnabled = true;
+    public static volatile int lightingSpacingXZ = 12;
+    public static volatile int lightingSpacingY = 7;
+    public static volatile int lightingSearchRadius = 3;
+    public static volatile int lightingBlocksPerTick = 200;
+    public static volatile ResourceLocation lightingBlockId = ResourceLocation.tryParse("minecraft:glowstone");
+
     public static volatile int maxDistanceFromAnchor = 96;
     public static volatile boolean cancelWhenOutOfRange = true;
     public static volatile boolean cancelOnDimensionChange = true;
@@ -92,6 +125,16 @@ public final class VoxelBuilderServerConfig {
         perJobBlocksPerTick = PER_JOB_BLOCKS_PER_TICK.get();
         maxActiveJobsGlobal = MAX_ACTIVE_JOBS_GLOBAL.get();
         maxActiveJobsPerPlayer = MAX_ACTIVE_JOBS_PER_PLAYER.get();
+
+        lightingEnabled = LIGHTING_ENABLED.get();
+        lightingSpacingXZ = LIGHTING_SPACING_XZ.get();
+        lightingSpacingY = LIGHTING_SPACING_Y.get();
+        lightingSearchRadius = LIGHTING_SEARCH_RADIUS.get();
+        lightingBlocksPerTick = LIGHTING_BLOCKS_PER_TICK.get();
+        lightingBlockId = ResourceLocation.tryParse(LIGHTING_BLOCK_ID.get());
+        if (lightingBlockId == null) {
+            lightingBlockId = ResourceLocation.tryParse("minecraft:glowstone");
+        }
 
         maxDistanceFromAnchor = MAX_DISTANCE_FROM_ANCHOR.get();
         cancelWhenOutOfRange = CANCEL_WHEN_OUT_OF_RANGE.get();

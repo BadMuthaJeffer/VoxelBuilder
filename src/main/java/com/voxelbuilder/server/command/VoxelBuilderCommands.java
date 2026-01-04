@@ -43,6 +43,13 @@ public final class VoxelBuilderCommands {
                                     src.sendSuccess(() -> Component.literal("  maxExtentXZ = " + VoxelBuilderServerConfig.maxExtentXZ), false);
                                     src.sendSuccess(() -> Component.literal("  maxExtentY = " + VoxelBuilderServerConfig.maxExtentY), false);
 
+                                    src.sendSuccess(() -> Component.literal("  lightingEnabled = " + VoxelBuilderServerConfig.lightingEnabled), false);
+                                    src.sendSuccess(() -> Component.literal("  lightingSpacingXZ = " + VoxelBuilderServerConfig.lightingSpacingXZ), false);
+                                    src.sendSuccess(() -> Component.literal("  lightingSpacingY = " + VoxelBuilderServerConfig.lightingSpacingY), false);
+                                    src.sendSuccess(() -> Component.literal("  lightingSearchRadius = " + VoxelBuilderServerConfig.lightingSearchRadius), false);
+                                    src.sendSuccess(() -> Component.literal("  lightingBlocksPerTick = " + VoxelBuilderServerConfig.lightingBlocksPerTick), false);
+                                    src.sendSuccess(() -> Component.literal("  lightingBlockId = " + VoxelBuilderServerConfig.lightingBlockId), false);
+
                                     return 1;
                                 }))
                         .then(Commands.literal("status")
@@ -68,6 +75,7 @@ public final class VoxelBuilderCommands {
                                         String line =
                                                 "  " + j.playerName() +
                                                 " plan=" + planShort +
+                                                " phase=" + j.phase() +
                                                 " " + j.placed() + "/" + j.total() +
                                                 " skipped=" + j.skipped() +
                                                 (j.cancelled() ? " (CANCELLED)" : "") +
