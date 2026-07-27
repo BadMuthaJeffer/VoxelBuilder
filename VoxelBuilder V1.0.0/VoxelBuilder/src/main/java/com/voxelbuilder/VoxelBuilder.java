@@ -1,0 +1,75 @@
+package com.voxelbuilder;
+
+import com.mojang.logging.LogUtils;
+import com.voxelbuilder.block.BuildAnchorBlock;
+import com.voxelbuilder.block.VoxelBuilderControllerBlock;
+import com.voxelbuilder.client.VoxelBuilderClientInit;
+
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.material.MapColor;
+
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.ModContainer;
+import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.loading.FMLEnvironment;
+import net.neoforged.neoforge.registries.DeferredBlock;
+import net.neoforged.neoforge.registries.DeferredItem;
+import net.neoforged.neoforge.registries.DeferredRegister;
+
+import org.slf4j.Logger;
+
+@Mod(VoxelBuilder.MODID)
+public class VoxelBuilder {
+
+    public static final String MODID = "voxelbuilder";
+    public static final Logger LOGGER = LogUtils.getLogger();
+
+    public static final DeferredRegister.Blocks BLOCKS =
+            DeferredRegister.createBlocks(MODID);
+    public static final DeferredRegister.Items ITEMS =
+            DeferredRegister.createItems(MODID);
+
+    public static final DeferredBlock<Block> VOXEL_BUILDER_CONTROLLER =
+            BLOCKS.register("voxel_builder_controller",
+                    () -> new VoxelBuilderControllerBlock(
+                            BlockBehaviour.Properties.of()
+                                    .mapColor(MapColor.METAL)
+                                    .strength(3.0f)
+                    )
+            );
+
+    public static final DeferredItem<BlockItem> VOXEL_BUILDER_CONTROLLER_ITEM =
+            ITEMS.registerSimpleBlockItem(
+                    "voxel_builder_controller",
+                    VOXEL_BUILDER_CONTROLLER
+            );
+
+    public static final DeferredBlock<Block> BUILD_ANCHOR =
+            BLOCKS.register("build_anchor",
+                    () -> new BuildAnchorBlock(
+                            BlockBehaviour.Properties.of()
+                                    .mapColor(MapColor.COLOR_CYAN)
+                                    .noCollission()
+                                    .strength(0.1f)
+                    )
+            );
+
+    public static final DeferredItem<BlockItem> BUILD_ANCHOR_ITEM =
+            ITEMS.registerSimpleBlockItem(
+                    "build_anchor",
+                    BUILD_ANCHOR
+            );
+
+    public VoxelBuilder(IEventBus bus, ModContainer container) {
+
+        BLOCKS.register(bus);
+        ITEMS.register(bus);
+
+        if (FMLEnvironment.dist == Dist.CLIENT) {
+            VoxelBuilderClientInit.initClient();
+        }
+    }
+}

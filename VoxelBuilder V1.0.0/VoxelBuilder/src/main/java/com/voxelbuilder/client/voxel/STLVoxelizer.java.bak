@@ -1,0 +1,297 @@
+package com.voxelbuilder.client.voxel;
+
+import com.voxelbuilder.client.voxel.STLAsciiLoader.Triangle;
+
+import java.util.ArrayList;
+import java.util.BitSet;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * HYBRID STAGE 2C-3 (FINAL FOR PREVIEW):
+ *
+ * - Fast surface rasterization
+ * - Adaptive internal resolution
+ * - Internal-space surface thickening (Benchy fix)
+ * - Downscale to output resolution (min 64)
+ *
+ * ❌ No solid fill
+ * ❌ No flood fill
+ * ❌ No watertight enforcement
+ *
+ * This file is now STABLE. Do not touch unless explicitly upgrading.
+ */
+public final class STLVoxelizer {
+
+    /* =========================
+     * Public data types
+     * ========================= */
+
+    public static final class Voxel {
+        public final int x, y, z;
+        public Voxel(int x, int y, int z) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+        }
+    }
+
+    public static final class Result {
+        public final List<Voxel> voxels;
+        public final int sizeX, sizeY, sizeZ;
+
+        public Result(List<Voxel> voxels, int sizeX, int sizeY, int sizeZ) {
+            this.voxels = voxels;
+            this.sizeX = sizeX;
+            this.sizeY = sizeY;
+            this.sizeZ = sizeZ;
+        }
+    }
+
+    /** Diagnostic snapshot of the last voxelization run */
+    public static final class Stats {
+        public int triangleCount;
+        public int internalResolution;
+        public int outputResolution;
+        public int internalSurfaceVoxelCount;
+        public int outputVoxelCount;
+        public long voxelizeTimeMillis;
+    }
+
+    private static Stats lastStats = null;
+
+    public static Stats getLastStats() {
+        return lastStats;
+    }
+
+    private STLVoxelizer() {}
+
+    /* =========================
+     * Main entry point
+     * ========================= */
+
+    public static Result voxelizeSurface(List<Triangle> tris, int targetMaxDim) {
+
+        long startTime = System.currentTimeMillis();
+
+        Stats stats = new Stats();
+        stats.triangleCount = (tris == null ? 0 : tris.size());
+
+        if (tris == null || tris.isEmpty()) {
+            lastStats = stats;
+            return new Result(List.of(), 0, 0, 0);
+        }
+
+        // === Bounds ===
+        float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY, minZ = Float.POSITIVE_INFINITY;
+        float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY, maxZ = Float.NEGATIVE_INFINITY;
+
+        for (Triangle t : tris) {
+            minX = Math.min(minX, Math.min(t.a.x, Math.min(t.b.x, t.c.x)));
+            minY = Math.min(minY, Math.min(t.a.y, Math.min(t.b.y, t.c.y)));
+            minZ = Math.min(minZ, Math.min(t.a.z, Math.min(t.b.z, t.c.z)));
+            maxX = Math.max(maxX, Math.max(t.a.x, Math.max(t.b.x, t.c.x)));
+            maxY = Math.max(maxY, Math.max(t.a.y, Math.max(t.b.y, t.c.y)));
+            maxZ = Math.max(maxZ, Math.max(t.a.z, Math.max(t.b.z, t.c.z)));
+        }
+
+        float spanX = maxX - minX;
+        float spanY = maxY - minY;
+        float spanZ = maxZ - minZ;
+        float maxSpan = Math.max(spanX, Math.max(spanY, spanZ));
+        if (maxSpan <= 0.000001f) {
+            lastStats = stats;
+            return new Result(List.of(), 0, 0, 0);
+        }
+
+        // === Resolutions ===
+        final int outRes = Math.max(targetMaxDim, 64);
+        final int internalRes = clampInt(outRes * 2, 64, 256);
+
+        stats.outputResolution = outRes;
+        stats.internalResolution = internalRes;
+
+        final float internalScale = (float) (internalRes - 1) / maxSpan;
+        BitSet surfaceBits = new BitSet(internalRes * internalRes * internalRes);
+
+        final float threshSq = 0.9f * 0.9f;
+
+        // === Surface rasterization ===
+        for (Triangle t : tris) {
+
+            float ax = (t.a.x - minX) * internalScale;
+            float ay = (t.a.y - minY) * internalScale;
+            float az = (t.a.z - minZ) * internalScale;
+
+            float bx = (t.b.x - minX) * internalScale;
+            float by = (t.b.y - minY) * internalScale;
+            float bz = (t.b.z - minZ) * internalScale;
+
+            float cx = (t.c.x - minX) * internalScale;
+            float cy = (t.c.y - minY) * internalScale;
+            float cz = (t.c.z - minZ) * internalScale;
+
+            int minVX = clampInt((int) Math.floor(min3(ax, bx, cx) - 1), 0, internalRes - 1);
+            int minVY = clampInt((int) Math.floor(min3(ay, by, cy) - 1), 0, internalRes - 1);
+            int minVZ = clampInt((int) Math.floor(min3(az, bz, cz) - 1), 0, internalRes - 1);
+
+            int maxVX = clampInt((int) Math.ceil(max3(ax, bx, cx) + 1), 0, internalRes - 1);
+            int maxVY = clampInt((int) Math.ceil(max3(ay, by, cy) + 1), 0, internalRes - 1);
+            int maxVZ = clampInt((int) Math.ceil(max3(az, bz, cz) + 1), 0, internalRes - 1);
+
+            for (int x = minVX; x <= maxVX; x++) {
+                for (int y = minVY; y <= maxVY; y++) {
+                    for (int z = minVZ; z <= maxVZ; z++) {
+                        float px = x + 0.5f;
+                        float py = y + 0.5f;
+                        float pz = z + 0.5f;
+
+                        if (distSqPointToTriangle(px, py, pz, ax, ay, az, bx, by, bz, cx, cy, cz) <= threshSq) {
+                            surfaceBits.set(index(x, y, z, internalRes));
+                        }
+                    }
+                }
+            }
+        }
+
+        // === Surface thickening (Benchy fix) ===
+        BitSet thickened = new BitSet(surfaceBits.size());
+        for (int idx = surfaceBits.nextSetBit(0); idx >= 0; idx = surfaceBits.nextSetBit(idx + 1)) {
+            thickened.set(idx);
+
+            int x = idx % internalRes;
+            int yz = idx / internalRes;
+            int y = yz % internalRes;
+            int z = yz / internalRes;
+
+            setIfValid(thickened, x + 1, y, z, internalRes);
+            setIfValid(thickened, x - 1, y, z, internalRes);
+            setIfValid(thickened, x, y + 1, z, internalRes);
+            setIfValid(thickened, x, y - 1, z, internalRes);
+            setIfValid(thickened, x, y, z + 1, internalRes);
+            setIfValid(thickened, x, y, z - 1, internalRes);
+        }
+        surfaceBits = thickened;
+
+        stats.internalSurfaceVoxelCount = surfaceBits.cardinality();
+
+        // === Downscale ===
+        Set<Long> outPacked = new HashSet<>();
+        int maxOX = 0, maxOY = 0, maxOZ = 0;
+
+        for (int idx = surfaceBits.nextSetBit(0); idx >= 0; idx = surfaceBits.nextSetBit(idx + 1)) {
+            int x = idx % internalRes;
+            int yz = idx / internalRes;
+            int y = yz % internalRes;
+            int z = yz / internalRes;
+
+            int ox = clampInt((x * outRes) / internalRes, 0, outRes - 1);
+            int oy = clampInt((y * outRes) / internalRes, 0, outRes - 1);
+            int oz = clampInt((z * outRes) / internalRes, 0, outRes - 1);
+
+            outPacked.add(pack(ox, oy, oz));
+            if (ox > maxOX) maxOX = ox;
+            if (oy > maxOY) maxOY = oy;
+            if (oz > maxOZ) maxOZ = oz;
+        }
+
+        stats.outputVoxelCount = outPacked.size();
+        stats.voxelizeTimeMillis = System.currentTimeMillis() - startTime;
+        lastStats = stats;
+
+        ArrayList<Voxel> out = new ArrayList<>(outPacked.size());
+        for (long key : outPacked) {
+            out.add(new Voxel(
+                    (int) (key & 0x1FFFFF),
+                    (int) ((key >>> 21) & 0x1FFFFF),
+                    (int) ((key >>> 42) & 0x1FFFFF)
+            ));
+        }
+
+        return new Result(out, maxOX + 1, maxOY + 1, maxOZ + 1);
+    }
+
+    /* =========================
+     * Helpers
+     * ========================= */
+
+    private static void setIfValid(BitSet bits, int x, int y, int z, int res) {
+        if (x < 0 || y < 0 || z < 0) return;
+        if (x >= res || y >= res || z >= res) return;
+        bits.set(x + res * (y + res * z));
+    }
+
+    private static float distSqPointToTriangle(
+            float px, float py, float pz,
+            float ax, float ay, float az,
+            float bx, float by, float bz,
+            float cx, float cy, float cz
+    ) {
+        float abx = bx - ax, aby = by - ay, abz = bz - az;
+        float acx = cx - ax, acy = cy - ay, acz = cz - az;
+        float apx = px - ax, apy = py - ay, apz = pz - az;
+
+        float d1 = abx * apx + aby * apy + abz * apz;
+        float d2 = acx * apx + acy * apy + acz * apz;
+
+        if (d1 <= 0 && d2 <= 0) return apx * apx + apy * apy + apz * apz;
+
+        float bpx = px - bx, bpy = py - by, bpz = pz - bz;
+        float d3 = abx * bpx + aby * bpy + abz * bpz;
+        float d4 = acx * bpx + acy * bpy + acz * bpz;
+
+        if (d3 >= 0 && d4 <= d3) return bpx * bpx + bpy * bpy + bpz * bpz;
+
+        float vc = d1 * d4 - d3 * d2;
+        if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+            float v = d1 / (d1 - d3);
+            float dx = px - (ax + v * abx);
+            float dy = py - (ay + v * aby);
+            float dz = pz - (az + v * abz);
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        float cpx = px - cx, cpy = py - cy, cpz = pz - cz;
+        float d5 = abx * cpx + aby * cpy + abz * cpz;
+        float d6 = acx * cpx + acy * cpy + acz * cpz;
+
+        if (d6 >= 0 && d5 <= d6) return cpx * cpx + cpy * cpy + cpz * cpz;
+
+        float vb = d5 * d2 - d1 * d6;
+        if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+            float w = d2 / (d2 - d6);
+            float dx = px - (ax + w * acx);
+            float dy = py - (ay + w * acy);
+            float dz = pz - (az + w * acz);
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        float nx = aby * acz - abz * acy;
+        float ny = abz * acx - abx * acz;
+        float nz = abx * acy - aby * acx;
+
+        float dist = (apx * nx + apy * ny + apz * nz);
+        return dist * dist;
+    }
+
+    private static int index(int x, int y, int z, int res) {
+        return x + res * (y + res * z);
+    }
+
+    private static int clampInt(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    private static float min3(float a, float b, float c) {
+        return Math.min(a, Math.min(b, c));
+    }
+
+    private static float max3(float a, float b, float c) {
+        return Math.max(a, Math.max(b, c));
+    }
+
+    private static long pack(int x, int y, int z) {
+        return ((long) x) | ((long) y << 21) | ((long) z << 42);
+    }
+}

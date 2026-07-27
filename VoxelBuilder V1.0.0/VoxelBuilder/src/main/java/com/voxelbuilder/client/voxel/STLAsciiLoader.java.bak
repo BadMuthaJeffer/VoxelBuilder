@@ -1,0 +1,57 @@
+package com.voxelbuilder.client.voxel;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Minimal ASCII STL loader.
+ * Supports: facet/outer loop/vertex lines.
+ * Ignores normals; returns triangles as float vertices.
+ */
+public final class STLAsciiLoader {
+
+    public static final class Vec3f {
+        public final float x, y, z;
+        public Vec3f(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
+    }
+
+    public static final class Triangle {
+        public final Vec3f a, b, c;
+        public Triangle(Vec3f a, Vec3f b, Vec3f c) { this.a = a; this.b = b; this.c = c; }
+    }
+
+    private STLAsciiLoader() {}
+
+    public static List<Triangle> load(File stlFile) throws Exception {
+        List<Triangle> tris = new ArrayList<>();
+
+        try (BufferedReader br = new BufferedReader(new FileReader(stlFile))) {
+            String line;
+            Vec3f[] v = new Vec3f[3];
+            int vi = 0;
+
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                // Typical: "vertex 12.34 56.78 90.12"
+                if (line.startsWith("vertex")) {
+                    String[] p = line.split("\\s+");
+                    if (p.length >= 4) {
+                        float x = Float.parseFloat(p[1]);
+                        float y = Float.parseFloat(p[2]);
+                        float z = Float.parseFloat(p[3]);
+                        v[vi++] = new Vec3f(x, y, z);
+                        if (vi == 3) {
+                            tris.add(new Triangle(v[0], v[1], v[2]));
+                            vi = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        return tris;
+    }
+}

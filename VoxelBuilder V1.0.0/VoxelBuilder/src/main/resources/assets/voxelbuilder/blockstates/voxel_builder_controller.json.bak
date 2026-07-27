@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "voxelbuilder:block/voxel_builder_controller" }
+  }
+}
